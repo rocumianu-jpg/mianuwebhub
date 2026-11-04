@@ -11,6 +11,7 @@ const ordersRoutes = require('./src/routes/orders');
 const depositRoutes = require('./src/routes/deposit');
 const adminRoutes = require('./src/routes/admin');
 const categoryRoutes = require('./src/routes/category');
+const geminiRoutes = require('./src/routes/gemini');
 const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -32,6 +33,7 @@ app.use('/api/orders', ordersRoutes);
 app.use('/api/deposit', depositRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoryRoutes);
+app.use('/api/gemini', geminiRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is running' });
