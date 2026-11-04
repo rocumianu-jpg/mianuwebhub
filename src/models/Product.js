@@ -31,10 +31,10 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    // Phân loại: instant (Tự động / Có sẵn - nhả link ngay) | manual (Xử lý thủ công - chờ admin duyệt)
+    // Phân loại: instant (Tự động / Có sẵn - nhả link ngay) | manual (Xử lý thủ công) | bot_gemini (Tự động Telegram Bot)
     productType: {
       type: String,
-      enum: ['instant', 'manual'],
+      enum: ['instant', 'manual', 'bot_gemini'],
       default: 'instant',
     },
     // Nền tảng (Facebook, TikTok, Instagram, YouTube, Telegram, Shopee, Discord, Software...)
