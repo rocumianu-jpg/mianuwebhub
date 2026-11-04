@@ -31,6 +31,31 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Nền tảng (Facebook, TikTok, Instagram, YouTube, Telegram, Shopee, Discord, Software...)
+    platform: {
+      type: String,
+      default: 'Khác',
+      trim: true,
+    },
+    // Danh mục con (View Người Thật, Theo Dõi Việt, Tym Dạng Mới, Tool / Script...)
+    subCategory: {
+      type: String,
+      default: 'Mặc định',
+      trim: true,
+    },
+    // Vật phẩm / Link bí mật đơn lẻ nhập trực tiếp lúc thêm/sửa sản phẩm
+    secretItem: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    // Mảng chứa các link/key trong kho bí mật gắn trực tiếp vào sản phẩm
+    secretLinks: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
   },
   { timestamps: true }
 );
