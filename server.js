@@ -15,35 +15,30 @@ const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
 
-// CORS
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: process.env.FRONTEND_URL || '*',
     credentials: true,
   })
 );
 
-// Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Routes
+// Các Routes chính
 app.use('/api/auth', authRoutes);
-app.use('/api/shop', shopRoutes);
+app.use('/api/shop', shopRoutes);         // Đảm bảo có dòng này
 app.use('/api/orders', ordersRoutes);
 app.use('/api/deposit', depositRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoryRoutes);
 
-// Health check
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is running' });
 });
 
-// Global error handler (must be last)
 app.use(errorHandler);
 
-// MongoDB connection + server start
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/digital-shop';
 
