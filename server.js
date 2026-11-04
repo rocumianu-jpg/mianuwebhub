@@ -10,6 +10,7 @@ const shopRoutes = require('./src/routes/shop');
 const ordersRoutes = require('./src/routes/orders');
 const depositRoutes = require('./src/routes/deposit');
 const adminRoutes = require('./src/routes/admin');
+const categoryRoutes = require('./src/routes/category');
 const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -32,6 +33,7 @@ app.use('/api/shop', shopRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/deposit', depositRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/categories', categoryRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {
