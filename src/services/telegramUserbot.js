@@ -19,13 +19,13 @@ let sessionLock = {
   lockedAt: null,
 };
 
-// Tự động giải phóng lock sau 4 phút nếu user không nhập OTP
-const LOCK_TIMEOUT_MS = 4 * 60 * 1000;
+// Tự động giải phóng lock sau 5 phút nếu user không nhập OTP
+const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
 function checkAndAutoReleaseLock() {
   if (sessionLock.isBusy && sessionLock.lockedAt) {
     if (Date.now() - sessionLock.lockedAt > LOCK_TIMEOUT_MS) {
-      console.warn('[Userbot Lock] Quá 4 phút chưa nhập OTP, tự động giải phóng lock.');
+      console.warn('[Userbot Lock] Quá 5 phút chưa hoàn thành, tự động giải phóng lock.');
       sessionLock = { isBusy: false, orderId: null, gmail: null, lockedAt: null };
     }
   }
@@ -71,19 +71,13 @@ async function getBotEntity(client) {
 }
 
 /**
- * Gửi tin nhắn và chờ phản hồi từ Bot
- * @param {TelegramClient} client
- * @param {any} botEntity
- * @param {string} messageText
- * @param {number} timeoutSeconds
- * @param {(text: string) => boolean} [predicate]
+ * Gửi tin nhắn và chờ phản hồi từ Bot (Dùng cho bước 1: /run và gửi gmail)
  */
 async function sendAndWaitForReply(client, botEntity, messageText, timeoutSeconds = 30, predicate = null) {
   // Lấy ID tin nhắn mới nhất trước khi gửi
   const existingMsgs = await client.getMessages(botEntity, { limit: 1 });
   const lastId = existingMsgs && existingMsgs.length > 0 ? existingMsgs[0].id : 0;
 
-  // Gửi tin nhắn
   console.log(`[Userbot -> Bot] Gửi: "${messageText}"`);
   await client.sendMessage(botEntity, { message: messageText });
 
@@ -94,7 +88,6 @@ async function sendAndWaitForReply(client, botEntity, messageText, timeoutSecond
     await new Promise((resolve) => setTimeout(resolve, 1500)); // Lắng nghe mỗi 1.5s
 
     const msgs = await client.getMessages(botEntity, { limit: 5 });
-    // Tìm tin nhắn đến từ bot (out = false) có ID lớn hơn tin nhắn vừa gửi
     const incoming = msgs.find((m) => !m.out && m.id > lastId);
 
     if (incoming && incoming.message) {
@@ -105,7 +98,6 @@ async function sendAndWaitForReply(client, botEntity, messageText, timeoutSecond
         if (predicate(text)) {
           return incoming;
         }
-        // Nếu tin nhắn báo lỗi rõ ràng thì ngắt sớm
         if (
           text.toLowerCase().includes('lỗi') ||
           text.toLowerCase().includes('thất bại') ||
@@ -124,11 +116,7 @@ async function sendAndWaitForReply(client, botEntity, messageText, timeoutSecond
 }
 
 /**
- * Bắt đầu luồng kích hoạt Gemini
- * 1. Gửi /run
- * 2. Đợi bot phản hồi
- * 3. Gửi gmail
- * 4. Đợi bot phản hồi yêu cầu 6 số OTP (5-20s)
+ * Bắt đầu luồng kích hoạt Gemini (Bước 1: /run và Gmail)
  */
 async function startGeminiActivation(gmail, orderId) {
   checkAndAutoReleaseLock();
@@ -140,7 +128,6 @@ async function startGeminiActivation(gmail, orderId) {
   const client = await getClient();
   const botEntity = await getBotEntity(client);
 
-  // Đặt khóa phiên
   sessionLock = {
     isBusy: true,
     orderId,
@@ -153,7 +140,6 @@ async function startGeminiActivation(gmail, orderId) {
     console.log('[Luồng Gemini 1] Đang gửi lệnh /run tới bot...');
     await sendAndWaitForReply(client, botEntity, '/run', 20);
 
-    // Dừng nhẹ 1 giây để bot chuyển trạng thái
     await new Promise((r) => setTimeout(r, 1000));
 
     // Bước 2: Gửi Gmail và chờ bot yêu cầu nhập OTP (5-25s)
@@ -183,56 +169,122 @@ async function startGeminiActivation(gmail, orderId) {
       rawPrompt: otpPromptReply.message,
     };
   } catch (error) {
-    // Mở khóa nếu xảy ra lỗi trong bước khởi động
     sessionLock = { isBusy: false, orderId: null, gmail: null, lockedAt: null };
     throw error;
   }
 }
 
 /**
+ * VÒNG LẶP CHỜ KẾT QUẢ XÁC THỰC OTP (Bước 2):
+ * - Thời gian chờ tối đa 60 giây (poll mỗi 2 giây)
+ * - Tự động bỏ qua các tin nhắn trạng thái trung gian ("Đang xử lý...", "Vui lòng chờ...")
+ * - Bắt tin nhắn có chứa "http" hoặc "NHẬN ƯU ĐÃI THÀNH CÔNG!"
+ * - Chỉ hủy đơn/hoàn tiền khi hết 60s hoặc Bot phản hồi rõ ràng sai mã OTP
+ */
+async function waitForVerificationResult(client, botEntity, lastId, timeoutSeconds = 60) {
+  const startTime = Date.now();
+  const timeoutMs = timeoutSeconds * 1000;
+  let lastLoggedText = '';
+
+  console.log(`[Luồng Gemini 4] Bắt đầu vòng lặp chờ kết quả từ Bot (Tối đa ${timeoutSeconds}s)...`);
+
+  while (Date.now() - startTime < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 2000)); // Kiểm tra mỗi 2 giây
+
+    // Lấy 8 tin nhắn mới nhất trong đoạn chat
+    const msgs = await client.getMessages(botEntity, { limit: 8 });
+
+    // Lọc các tin nhắn đến từ bot sau thời điểm gửi OTP
+    const incomingMsgs = msgs.filter((m) => !m.out && m.id > lastId);
+
+    if (incomingMsgs.length > 0) {
+      // Gộp nội dung để trích xuất đầy đủ nếu bot gửi nhiều tin nhắn liên tiếp
+      const combinedText = incomingMsgs.map((m) => m.message || '').join('\n');
+      const latestText = incomingMsgs[0]?.message?.trim() || '';
+
+      if (latestText !== lastLoggedText) {
+        console.log(`[Bot -> Userbot (Đang xử lý...)]\n${latestText}`);
+        lastLoggedText = latestText;
+      }
+
+      const lowerCombined = combinedText.toLowerCase();
+
+      // 1. KIỂM TRA ĐIỀU KIỆN THÀNH CÔNG: Chứa link (http...) hoặc keyword "NHẬN ƯU ĐÃI THÀNH CÔNG!"
+      const urlRegex = /(https?:\/\/[^\s"'<>\)]+)/gi;
+      const urlMatches = combinedText.match(urlRegex);
+
+      const hasSuccessKeyword =
+        combinedText.includes('NHẬN ƯU ĐÃI THÀNH CÔNG') ||
+        lowerCombined.includes('nhận ưu đãi thành công');
+
+      // Nếu đã có link hoặc có thông báo thành công kèm link
+      if (urlMatches && urlMatches.length > 0) {
+        const cleanLink = urlMatches[0].replace(/[.,)>)]+$/, '');
+        console.log(`🎉 [Luồng Gemini 5] THÀNH CÔNG! Đã nhận được link ưu đãi: ${cleanLink}`);
+        return {
+          success: true,
+          status: 'completed',
+          link: cleanLink,
+          rawMessage: combinedText,
+        };
+      }
+
+      if (hasSuccessKeyword && !urlMatches) {
+        console.log('[Luồng Gemini 5] Đã thấy từ khóa "NHẬN ƯU ĐÃI THÀNH CÔNG!", đang đợi bot gửi kèm link...');
+      }
+
+      // 2. KIỂM TRA BÁO SAI MÃ OTP RÕ RÀNG (Ngắt sớm nếu sai OTP)
+      if (
+        lowerCombined.includes('sai otp') ||
+        lowerCombined.includes('otp không đúng') ||
+        lowerCombined.includes('mã không chính xác') ||
+        lowerCombined.includes('hết hạn') ||
+        lowerCombined.includes('mã otp không hợp lệ')
+      ) {
+        console.warn(`❌ [Luồng Gemini 5] Bot thông báo sai mã OTP: ${latestText}`);
+        return {
+          success: false,
+          status: 'cancelled',
+          reason: latestText || 'Bot báo sai mã OTP hoặc OTP đã hết hạn.',
+        };
+      }
+
+      // 3. NẾU LÀ TIN TRẠNG THÁI (vd: "Đang kiểm tra...", "Vui lòng đợi..."): BỎ QUA VÀ TIẾP TỤC ĐỢI!
+    }
+  }
+
+  // Quá 60 giây không có link
+  console.warn(`⏰ [Luồng Gemini 5] Đã quá ${timeoutSeconds}s không nhận được link kích hoạt từ Bot.`);
+  return {
+    success: false,
+    status: 'cancelled',
+    reason: `Bot xử lý quá thời gian (${timeoutSeconds}s) hoặc không thể lấy link kích hoạt.`,
+  };
+}
+
+/**
  * Xác thực OTP và lấy Link kích hoạt
- * 1. Gửi OTP tới bot
- * 2. Kiểm tra phản hồi: nếu có link (http...) thì completed, nếu sai/lỗi thì cancelled
  */
 async function verifyGeminiOtp(otp, orderId) {
   const client = await getClient();
   const botEntity = await getBotEntity(client);
 
   try {
-    console.log(`[Luồng Gemini 4] Đang gửi OTP "${otp}" tới bot...`);
-    const reply = await sendAndWaitForReply(client, botEntity, String(otp).trim(), 35);
-    const text = reply.message || '';
+    // 1. Lấy ID tin nhắn mới nhất trước khi gửi OTP để tránh đọc nhầm tin cũ
+    const existingMsgs = await client.getMessages(botEntity, { limit: 1 });
+    const lastId = existingMsgs && existingMsgs.length > 0 ? existingMsgs[0].id : 0;
 
-    // Kiểm tra xem phản hồi có chứa link (http / https) hay không
-    const urlRegex = /(https?:\/\/[^\s]+)/gi;
-    const matches = text.match(urlRegex);
+    // 2. Gửi mã OTP tới bot
+    console.log(`[Luồng Gemini 4] Đang gửi OTP "${otp}" tới bot @ngtrungthanhvip_bot...`);
+    await client.sendMessage(botEntity, { message: String(otp).trim() });
 
-    if (matches && matches.length > 0) {
-      const link = matches[0].replace(/[.,)>)]+$/, '');
-      console.log(`[Luồng Gemini 5] Thành công! Đã trích xuất link: ${link}`);
+    // 3. Lắng nghe liên tục tối đa 60 giây để bắt link / "NHẬN ƯU ĐÃI THÀNH CÔNG!"
+    const result = await waitForVerificationResult(client, botEntity, lastId, 60);
 
-      // Giải phóng lock
-      sessionLock = { isBusy: false, orderId: null, gmail: null, lockedAt: null };
-
-      return {
-        success: true,
-        status: 'completed',
-        link,
-        rawMessage: text,
-      };
-    }
-
-    // Không tìm thấy link trong phản hồi -> Sai OTP hoặc bot từ chối
-    console.warn(`[Luồng Gemini 5] Bot không trả về link hoặc báo lỗi: ${text}`);
-
-    // Giải phóng lock
+    // 4. Giải phóng lock sau khi xong
     sessionLock = { isBusy: false, orderId: null, gmail: null, lockedAt: null };
 
-    return {
-      success: false,
-      status: 'cancelled',
-      reason: text || 'Bot báo sai mã OTP hoặc không thể lấy link kích hoạt.',
-    };
+    return result;
   } catch (error) {
     sessionLock = { isBusy: false, orderId: null, gmail: null, lockedAt: null };
     return {
