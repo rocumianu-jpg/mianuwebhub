@@ -16,7 +16,7 @@ const orderSchema = new mongoose.Schema(
     },
     secretLink: {
       type: String,
-      required: [true, 'secretLink is required'],
+      default: '',
     },
     pricePaid: {
       type: Number,
@@ -25,6 +25,23 @@ const orderSchema = new mongoose.Schema(
     productTitle: {
       type: String,
       required: [true, 'productTitle is required'],
+    },
+    // Trạng thái đơn: pending (Chờ xử lý), processing (Đang làm), completed (Thành công), cancelled (Đã hủy)
+    status: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'cancelled'],
+      default: 'pending',
+    },
+    // Ghi chú lý do hủy từ Admin
+    cancelNote: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    // Cờ đánh dấu đã hoàn tiền ví hay chưa
+    refunded: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true }
