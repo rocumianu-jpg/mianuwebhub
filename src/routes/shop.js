@@ -9,10 +9,10 @@ const { protect } = require('../middleware/auth');
 // GET /api/shop/products (Public) - Lấy danh sách sản phẩm
 router.get('/products', getProducts);
 
-// POST /api/shop/buy (Protected) - Mua hàng với body: { productId: "..." }
+// POST /api/shop/buy (Protected) - Mua hàng: body { productId }
 router.post('/buy', protect, buyProduct);
 
-// POST /api/shop/buy/:productId (Protected) - Hỗ trợ cả trường hợp truyền id trên URL
+// POST /api/shop/buy/:productId (Protected) - Dự phòng truyền ID qua URL
 router.post('/buy/:productId', protect, buyProduct);
 
 module.exports = router;
