@@ -13,7 +13,7 @@ const User = require('../models/User');
 const getMyOrders = async (req, res, next) => {
   try {
     const orders = await Order.find({ userId: req.user._id })
-      .populate('productId', 'title imageUrl')
+      .populate('productId', 'title imageUrl productType')
       .sort({ createdAt: -1 });
 
     return res.json({ success: true, orders });
@@ -24,13 +24,7 @@ const getMyOrders = async (req, res, next) => {
 
 /**
  * POST /api/orders/buy
- * Protected – Mua hàng tự động:
- * 1. Nhận productId từ req.body (hoặc req.params)
- * 2. Kiểm tra sản phẩm và số dư ví User
- * 3. Trừ tiền tài khoản người dùng
- * 4. Lấy 1 link bí mật từ SecretVault và đánh dấu isUsed = true
- * 5. Lưu bản ghi Order
- * 6. Trả về secretItem / secretLink cho người dùng
+ * Protected – Mua hàng tự động hoặc thủ công
  */
 const buyProduct = async (req, res, next) => {
   const productId = req.body?.productId || req.params?.productId;
@@ -43,19 +37,16 @@ const buyProduct = async (req, res, next) => {
     });
   }
 
-  // Thử dùng MongoDB transaction (nếu DB hỗ trợ replica set)
   let session = null;
   try {
     session = await mongoose.startSession();
     session.startTransaction();
   } catch (err) {
-    // MongoDB standalone không bật replica set sẽ chuyển sang chế độ atomic
     session = null;
   }
 
   try {
     if (session) {
-      // ─── CHẾ ĐỘ 1: MONGO REPLICA SET TRANSACTION ───
       const product = await Product.findById(productId).session(session);
       if (!product) {
         await session.abortTransaction();
@@ -69,7 +60,6 @@ const buyProduct = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'Sản phẩm hiện đang tạm ngừng kinh doanh.' });
       }
 
-      // 1. Kiểm tra số dư người dùng
       const user = await User.findById(userId).session(session);
       if (!user) {
         await session.abortTransaction();
@@ -82,46 +72,64 @@ const buyProduct = async (req, res, next) => {
         session.endSession();
         return res.status(400).json({
           success: false,
-          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, bạn hiện có ${user.balance.toLocaleString('vi-VN')} đ.`,
+          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${user.balance.toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
         });
       }
 
-      // 2. Lấy 1 item bí mật từ SecretVault
-      const vault = await SecretVault.findOneAndUpdate(
-        { productId: product._id, isUsed: false },
-        { $set: { isUsed: true } },
-        { new: true, session }
-      );
+      const isManual = product.productType === 'manual';
+      let deliveredLink = '';
 
-      if (!vault) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ success: false, message: 'Sản phẩm này tạm thời đã hết hàng trong kho.' });
+      if (!isManual) {
+        const vault = await SecretVault.findOneAndUpdate(
+          { productId: product._id, isUsed: false },
+          { $set: { isUsed: true } },
+          { new: true, session }
+        );
+
+        if (vault) {
+          deliveredLink = vault.secretLink;
+        } else if (product.secretLinks && product.secretLinks.length > 0) {
+          deliveredLink = product.secretLinks.shift();
+        } else if (product.secretItem && product.secretItem.trim()) {
+          deliveredLink = product.secretItem.trim();
+        }
+
+        if (!deliveredLink) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: 'Sản phẩm có sẵn này tạm thời đã hết hàng trong kho. Vui lòng quay lại sau.',
+          });
+        }
+
+        product.stock = Math.max(0, product.stock - 1);
+        await product.save({ session });
+      } else {
+        if (product.stock > 0) {
+          product.stock = Math.max(0, product.stock - 1);
+          await product.save({ session });
+        }
       }
 
-      // 3. Trừ tiền ví User
       const updatedUser = await User.findByIdAndUpdate(
         userId,
         { $inc: { balance: -product.price } },
         { new: true, session }
       );
 
-      // 4. Giảm tồn kho sản phẩm
-      await Product.findByIdAndUpdate(
-        product._id,
-        { $inc: { stock: -1 } },
-        { session }
-      );
-
-      // 5. Lưu Order
+      const orderStatus = isManual ? 'pending' : 'completed';
       const [order] = await Order.create(
         [
           {
             userId,
             productId: product._id,
-            secretLink: vault.secretLink,
+            secretLink: deliveredLink,
             pricePaid: product.price,
             productTitle: product.title,
+            status: orderStatus,
+            cancelNote: '',
+            refunded: false,
           },
         ],
         { session }
@@ -132,15 +140,18 @@ const buyProduct = async (req, res, next) => {
 
       return res.status(201).json({
         success: true,
-        message: 'Mua hàng thành công!',
+        message: isManual
+          ? 'Đặt hàng thành công! Đơn hàng đang chờ Admin xử lý.'
+          : 'Mua hàng thành công!',
         order: {
           _id: order._id,
           id: order._id,
-          userId: order.userId,
           productId: order.productId,
           productTitle: order.productTitle,
           secretLink: order.secretLink,
+          secretItem: order.secretLink,
           pricePaid: order.pricePaid,
+          status: order.status,
           createdAt: order.createdAt,
         },
         secretItem: order.secretLink,
@@ -148,7 +159,6 @@ const buyProduct = async (req, res, next) => {
         newBalance: updatedUser.balance,
       });
     } else {
-      // ─── CHẾ ĐỘ 2: ATOMIC CHO MONGO STANDALONE (KHÔNG REPLICA SET) ───
       const product = await Product.findById(productId);
       if (!product) {
         return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm.' });
@@ -158,7 +168,32 @@ const buyProduct = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'Sản phẩm hiện đang tạm ngừng kinh doanh.' });
       }
 
-      // 1. Trừ tiền nguyên tử có điều kiện (balance >= price)
+      const isManual = product.productType === 'manual';
+      let deliveredLink = '';
+
+      if (!isManual) {
+        const vault = await SecretVault.findOneAndUpdate(
+          { productId: product._id, isUsed: false },
+          { $set: { isUsed: true } },
+          { new: true }
+        );
+
+        if (vault) {
+          deliveredLink = vault.secretLink;
+        } else if (product.secretLinks && product.secretLinks.length > 0) {
+          deliveredLink = product.secretLinks.shift();
+        } else if (product.secretItem && product.secretItem.trim()) {
+          deliveredLink = product.secretItem.trim();
+        }
+
+        if (!deliveredLink) {
+          return res.status(400).json({
+            success: false,
+            message: 'Sản phẩm có sẵn này tạm thời đã hết hàng trong kho. Vui lòng quay lại sau.',
+          });
+        }
+      }
+
       const updatedUser = await User.findOneAndUpdate(
         { _id: userId, balance: { $gte: product.price } },
         { $inc: { balance: -product.price } },
@@ -166,52 +201,50 @@ const buyProduct = async (req, res, next) => {
       );
 
       if (!updatedUser) {
+        if (!isManual && deliveredLink) {
+          await SecretVault.findOneAndUpdate(
+            { productId: product._id, secretLink: deliveredLink },
+            { $set: { isUsed: false } }
+          );
+        }
         const currentUser = await User.findById(userId);
         return res.status(400).json({
           success: false,
-          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, bạn hiện có ${(currentUser?.balance || 0).toLocaleString('vi-VN')} đ.`,
+          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${(currentUser?.balance || 0).toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
         });
       }
 
-      // 2. Lấy link bí mật từ kho SecretVault
-      const vault = await SecretVault.findOneAndUpdate(
-        { productId: product._id, isUsed: false },
-        { $set: { isUsed: true } },
-        { new: true }
-      );
-
-      if (!vault) {
-        // Hoàn lại tiền nếu hết hàng
-        await User.findByIdAndUpdate(userId, { $inc: { balance: product.price } });
-        return res.status(400).json({
-          success: false,
-          message: 'Sản phẩm này tạm thời đã hết hàng trong kho. Tiền đã được hoàn lại.',
-        });
+      if (product.stock > 0) {
+        product.stock = Math.max(0, product.stock - 1);
+        await product.save();
       }
 
-      // 3. Giảm tồn kho sản phẩm
-      await Product.findByIdAndUpdate(product._id, { $inc: { stock: -1 } });
-
-      // 4. Tạo bản ghi Order
+      const orderStatus = isManual ? 'pending' : 'completed';
       const order = await Order.create({
         userId,
         productId: product._id,
-        secretLink: vault.secretLink,
+        secretLink: deliveredLink,
         pricePaid: product.price,
         productTitle: product.title,
+        status: orderStatus,
+        cancelNote: '',
+        refunded: false,
       });
 
       return res.status(201).json({
         success: true,
-        message: 'Mua hàng thành công!',
+        message: isManual
+          ? 'Đặt hàng thành công! Đơn hàng đang chờ Admin xử lý.'
+          : 'Mua hàng thành công!',
         order: {
           _id: order._id,
           id: order._id,
-          userId: order.userId,
           productId: order.productId,
           productTitle: order.productTitle,
           secretLink: order.secretLink,
+          secretItem: order.secretLink,
           pricePaid: order.pricePaid,
+          status: order.status,
           createdAt: order.createdAt,
         },
         secretItem: order.secretLink,
