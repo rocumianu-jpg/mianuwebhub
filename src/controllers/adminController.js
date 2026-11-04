@@ -23,13 +23,55 @@ const getAllProducts = async (req, res, next) => {
  */
 const createProduct = async (req, res, next) => {
   try {
-    const { title, imageUrl, price, description, isActive } = req.body;
+    const {
+      title,
+      imageUrl,
+      price,
+      stock,
+      description,
+      isActive,
+      platform,
+      subCategory,
+      secretItem,
+    } = req.body;
 
     if (!title || price === undefined) {
-      return res.status(400).json({ success: false, message: 'title and price are required' });
+      return res.status(400).json({ success: false, message: 'Tiêu đề và giá sản phẩm là bắt buộc' });
     }
 
-    const product = await Product.create({ title, imageUrl, price, description, isActive });
+    let initialStock = Number(stock) || 0;
+    const secretLinks = [];
+
+    // Nếu admin nhập trực tiếp "Vật phẩm / Link bí mật sau thanh toán"
+    if (secretItem && typeof secretItem === 'string' && secretItem.trim()) {
+      secretLinks.push(secretItem.trim());
+      if (initialStock < 1) {
+        initialStock = 1;
+      }
+    }
+
+    const product = await Product.create({
+      title,
+      imageUrl: imageUrl || '',
+      price: Number(price),
+      stock: initialStock,
+      description: description || '',
+      isActive: isActive !== undefined ? Boolean(isActive) : true,
+      platform: platform ? platform.trim() : 'Khác',
+      subCategory: subCategory ? subCategory.trim() : 'Mặc định',
+      secretItem: secretItem ? secretItem.trim() : '',
+      secretLinks,
+    });
+
+    // Đồng thời tạo 1 bản ghi trong SecretVault nếu có secretItem
+    if (secretItem && secretItem.trim()) {
+      await SecretVault.create({
+        productId: product._id,
+        secretLink: secretItem.trim(),
+        isUsed: false,
+      });
+    }
+
     return res.status(201).json({ success: true, product });
   } catch (err) {
     next(err);
@@ -42,12 +84,59 @@ const createProduct = async (req, res, next) => {
 const updateProduct = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const {
+      title,
+      imageUrl,
+      price,
+      stock,
+      description,
+      isActive,
+      platform,
+      subCategory,
+      secretItem,
+    } = req.body;
 
-    const product = await Product.findByIdAndUpdate(id, updates, { new: true, runValidators: true });
+    const product = await Product.findById(id);
     if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm' });
     }
+
+    if (title !== undefined) product.title = title;
+    if (imageUrl !== undefined) product.imageUrl = imageUrl;
+    if (price !== undefined) product.price = Number(price);
+    if (stock !== undefined) product.stock = Number(stock);
+    if (description !== undefined) product.description = description;
+    if (isActive !== undefined) product.isActive = Boolean(isActive);
+    if (platform !== undefined) product.platform = platform.trim();
+    if (subCategory !== undefined) product.subCategory = subCategory.trim();
+
+    // Nếu admin nhập/sửa secretItem mới
+    if (secretItem !== undefined) {
+      const trimmedSecret = secretItem.trim();
+      product.secretItem = trimmedSecret;
+      if (trimmedSecret) {
+        const existingVault = await SecretVault.findOne({
+          productId: product._id,
+          secretLink: trimmedSecret,
+        });
+
+        if (!existingVault) {
+          await SecretVault.create({
+            productId: product._id,
+            secretLink: trimmedSecret,
+            isUsed: false,
+          });
+          if (!product.secretLinks.includes(trimmedSecret)) {
+            product.secretLinks.push(trimmedSecret);
+          }
+          if (product.stock === 0) {
+            product.stock = 1;
+          }
+        }
+      }
+    }
+
+    await product.save();
     return res.json({ success: true, product });
   } catch (err) {
     next(err);
@@ -62,9 +151,11 @@ const deleteProduct = async (req, res, next) => {
     const { id } = req.params;
     const product = await Product.findByIdAndDelete(id);
     if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm' });
     }
-    return res.json({ success: true, message: 'Product deleted' });
+    await SecretVault.deleteMany({ productId: id });
+
+    return res.json({ success: true, message: 'Đã xóa sản phẩm thành công' });
   } catch (err) {
     next(err);
   }
@@ -73,43 +164,71 @@ const deleteProduct = async (req, res, next) => {
 /* ─── SecretVault ───────────────────────────────────────────────────── */
 
 /**
- * POST /api/admin/products/:id/vault
- * Body: { links: ['url1', 'url2', ...] }
+ * POST /api/admin/vault/:id/links
+ * Nạp link vào kho bí mật & cập nhật tồn kho
  */
-const addSecretLinks = async (req, res, next) => {
+const addVaultLinks = async (req, res, next) => {
   try {
     const productId = req.params.id;
-    const { links } = req.body;
+    let rawLinks = req.body.links;
 
-    if (!Array.isArray(links) || links.length === 0) {
-      return res.status(400).json({ success: false, message: 'links must be a non-empty array' });
+    if (typeof rawLinks === 'string') {
+      rawLinks = rawLinks.split('\n');
+    }
+
+    if (!Array.isArray(rawLinks)) {
+      return res.status(400).json({
+        success: false,
+        message: 'links phải là danh sách hoặc chuỗi phân tách theo dòng.',
+      });
+    }
+
+    const cleanLinks = rawLinks.map((l) => String(l).trim()).filter(Boolean);
+
+    if (cleanLinks.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vui lòng nhập ít nhất 1 link hợp lệ.',
+      });
     }
 
     const product = await Product.findById(productId);
     if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm' });
     }
 
-    const docs = links.map((link) => ({ productId, secretLink: link, isUsed: false }));
+    // 1. Thêm vào bảng SecretVault
+    const docs = cleanLinks.map((link) => ({
+      productId,
+      secretLink: link,
+      isUsed: false,
+    }));
     const inserted = await SecretVault.insertMany(docs);
 
-    // Increment product stock
-    product.stock += links.length;
+    // 2. Thêm vào mảng secretLinks trong Product và tăng tồn kho
+    if (!product.secretLinks) {
+      product.secretLinks = [];
+    }
+    product.secretLinks.push(...cleanLinks);
+    product.stock += cleanLinks.length;
     await product.save();
 
     return res.status(201).json({
       success: true,
+      message: `Đã nạp thành công ${inserted.length} link vào kho!`,
       inserted: inserted.length,
       newStock: product.stock,
+      product,
     });
   } catch (err) {
     next(err);
   }
 };
 
+const addSecretLinks = addVaultLinks;
+
 /**
  * GET /api/admin/products/:id/vault
- * Returns vault stats for a single product.
  */
 const getProductVaultStats = async (req, res, next) => {
   try {
@@ -117,7 +236,7 @@ const getProductVaultStats = async (req, res, next) => {
 
     const product = await Product.findById(productId);
     if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm' });
     }
 
     const total = await SecretVault.countDocuments({ productId });
@@ -137,8 +256,7 @@ const getProductVaultStats = async (req, res, next) => {
 };
 
 /**
- * GET /api/admin/vault-stats
- * Returns vault stats for every product.
+ * GET /api/admin/vault/stats
  */
 const getVaultStats = async (req, res, next) => {
   try {
@@ -181,7 +299,6 @@ const getAllUsers = async (req, res, next) => {
 
 /**
  * POST /api/admin/users/:id/topup
- * Body: { amount: Number }
  */
 const topUpUser = async (req, res, next) => {
   try {
@@ -189,7 +306,7 @@ const topUpUser = async (req, res, next) => {
     const { amount } = req.body;
 
     if (!amount || typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({ success: false, message: 'amount must be a positive number' });
+      return res.status(400).json({ success: false, message: 'Số tiền nạp phải là số dương hợp lệ' });
     }
 
     const user = await User.findByIdAndUpdate(
@@ -199,11 +316,12 @@ const topUpUser = async (req, res, next) => {
     ).select('-passwordHash');
 
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng' });
     }
 
     return res.json({
       success: true,
+      message: `Đã cộng ${amount.toLocaleString('vi-VN')} đ vào ví ${user.username}`,
       user: {
         id: user._id,
         username: user.username,
@@ -221,6 +339,7 @@ module.exports = {
   createProduct,
   updateProduct,
   deleteProduct,
+  addVaultLinks,
   addSecretLinks,
   getProductVaultStats,
   getVaultStats,
