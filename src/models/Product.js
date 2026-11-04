@@ -31,6 +31,12 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Phân loại: instant (Tự động / Có sẵn - nhả link ngay) | manual (Xử lý thủ công - chờ admin duyệt)
+    productType: {
+      type: String,
+      enum: ['instant', 'manual'],
+      default: 'instant',
+    },
     // Nền tảng (Facebook, TikTok, Instagram, YouTube, Telegram, Shopee, Discord, Software...)
     platform: {
       type: String,
