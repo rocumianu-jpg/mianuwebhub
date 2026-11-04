@@ -8,7 +8,6 @@ const User = require('../models/User');
 
 /**
  * GET /api/shop/products
- * Public – Lấy danh sách sản phẩm đang hoạt động.
  */
 const getProducts = async (req, res, next) => {
   try {
@@ -21,12 +20,6 @@ const getProducts = async (req, res, next) => {
 
 /**
  * POST /api/shop/buy hoặc POST /api/shop/buy/:productId
- * Protected – Xử lý mua hàng:
- * 1. Nhận productId từ req.body hoặc req.params
- * 2. Kiểm tra tồn kho & số dư ví người dùng
- * 3. Trừ tiền ví
- * 4. Lấy link bí mật từ SecretVault (đánh dấu isUsed = true)
- * 5. Tạo đơn hàng và trả về secretItem / secretLink cùng số dư mới
  */
 const buyProduct = async (req, res, next) => {
   const productId = req.body?.productId || req.params?.productId;
@@ -39,7 +32,6 @@ const buyProduct = async (req, res, next) => {
     });
   }
 
-  // Thử khởi tạo session transaction (nếu MongoDB có bật Replica Set)
   let session = null;
   try {
     session = await mongoose.startSession();
@@ -50,7 +42,7 @@ const buyProduct = async (req, res, next) => {
 
   try {
     if (session) {
-      // ─── CHẾ ĐỘ 1: MONGO TRANSACTION ───
+      // ─── CHẾ ĐỘ 1: MONGO TRANSACTION (KHI CÓ REPLICA SET) ───
       const product = await Product.findById(productId).session(session);
       if (!product) {
         await session.abortTransaction();
@@ -64,7 +56,6 @@ const buyProduct = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'Sản phẩm hiện đang tạm ngừng kinh doanh.' });
       }
 
-      // 1. Kiểm tra số dư người dùng
       const user = await User.findById(userId).session(session);
       if (!user) {
         await session.abortTransaction();
@@ -77,44 +68,50 @@ const buyProduct = async (req, res, next) => {
         session.endSession();
         return res.status(400).json({
           success: false,
-          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${user.balance.toLocaleString('vi-VN')} đ.`,
+          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${user.balance.toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
         });
       }
 
-      // 2. Lấy link bí mật từ SecretVault
+      // Lấy link bí mật: ưu tiên SecretVault -> secretLinks -> secretItem
+      let deliveredLink = null;
       const vault = await SecretVault.findOneAndUpdate(
         { productId: product._id, isUsed: false },
         { $set: { isUsed: true } },
         { new: true, session }
       );
 
-      if (!vault) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ success: false, message: 'Sản phẩm này tạm thời đã hết hàng trong kho.' });
+      if (vault) {
+        deliveredLink = vault.secretLink;
+      } else if (product.secretLinks && product.secretLinks.length > 0) {
+        deliveredLink = product.secretLinks.shift();
+      } else if (product.secretItem && product.secretItem.trim()) {
+        deliveredLink = product.secretItem.trim();
       }
 
-      // 3. Trừ tiền tài khoản
+      if (!deliveredLink) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Sản phẩm này tạm thời đã hết hàng trong kho. Vui lòng quay lại sau.',
+        });
+      }
+
       const updatedUser = await User.findByIdAndUpdate(
         userId,
         { $inc: { balance: -product.price } },
         { new: true, session }
       );
 
-      // 4. Giảm số lượng tồn kho
-      await Product.findByIdAndUpdate(
-        product._id,
-        { $inc: { stock: -1 } },
-        { session }
-      );
+      product.stock = Math.max(0, product.stock - 1);
+      await product.save({ session });
 
-      // 5. Tạo đơn hàng mới
       const [order] = await Order.create(
         [
           {
             userId,
             productId: product._id,
-            secretLink: vault.secretLink,
+            secretLink: deliveredLink,
             pricePaid: product.price,
             productTitle: product.title,
           },
@@ -153,7 +150,6 @@ const buyProduct = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'Sản phẩm hiện đang tạm ngừng kinh doanh.' });
       }
 
-      // 1. Trừ tiền có điều kiện: chỉ trừ nếu balance >= price
       const updatedUser = await User.findOneAndUpdate(
         { _id: userId, balance: { $gte: product.price } },
         { $inc: { balance: -product.price } },
@@ -164,34 +160,40 @@ const buyProduct = async (req, res, next) => {
         const currentUser = await User.findById(userId);
         return res.status(400).json({
           success: false,
-          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${(currentUser?.balance || 0).toLocaleString('vi-VN')} đ.`,
+          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${(currentUser?.balance || 0).toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
         });
       }
 
-      // 2. Lấy 1 link bí mật từ kho
+      let deliveredLink = null;
       const vault = await SecretVault.findOneAndUpdate(
         { productId: product._id, isUsed: false },
         { $set: { isUsed: true } },
         { new: true }
       );
 
-      if (!vault) {
-        // Hoàn tiền nếu kho hết hàng
+      if (vault) {
+        deliveredLink = vault.secretLink;
+      } else if (product.secretLinks && product.secretLinks.length > 0) {
+        deliveredLink = product.secretLinks.shift();
+      } else if (product.secretItem && product.secretItem.trim()) {
+        deliveredLink = product.secretItem.trim();
+      }
+
+      if (!deliveredLink) {
         await User.findByIdAndUpdate(userId, { $inc: { balance: product.price } });
         return res.status(400).json({
           success: false,
-          message: 'Sản phẩm này tạm thời đã hết hàng trong kho. Tiền đã được hoàn lại.',
+          message: 'Sản phẩm này tạm thời đã hết hàng trong kho. Tiền đã được hoàn lại ví của bạn.',
         });
       }
 
-      // 3. Giảm tồn kho sản phẩm
-      await Product.findByIdAndUpdate(product._id, { $inc: { stock: -1 } });
+      product.stock = Math.max(0, product.stock - 1);
+      await product.save();
 
-      // 4. Tạo bản ghi Order
       const order = await Order.create({
         userId,
         productId: product._id,
-        secretLink: vault.secretLink,
+        secretLink: deliveredLink,
         pricePaid: product.price,
         productTitle: product.title,
       });
