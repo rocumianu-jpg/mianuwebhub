@@ -16,6 +16,7 @@ const geminiRoutes = require('./src/routes/gemini');
 const announcementRoutes = require('./src/routes/announcement');
 const notificationRoutes = require('./src/routes/notifications');
 const feedbackRoutes = require('./src/routes/feedback');
+const taskRoutes = require('./src/routes/tasks');
 const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -41,6 +42,7 @@ app.use('/api/gemini', geminiRoutes);
 app.use('/api/announcement', announcementRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/feedbacks', feedbackRoutes);
+app.use('/api/tasks', taskRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is running' });

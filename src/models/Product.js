@@ -73,6 +73,16 @@ const productSchema = new mongoose.Schema(
         trim: true,
       },
     ],
+    // Hỗ trợ thanh toán bằng Coin
+    isCoinAllowed: {
+      type: Boolean,
+      default: false,
+    },
+    coinPrice: {
+      type: Number,
+      default: 0,
+      min: [0, 'Coin price cannot be negative'],
+    },
   },
   { timestamps: true }
 );

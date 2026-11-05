@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const SecretVault = require('../models/SecretVault');
 const Order = require('../models/Order');
 const User = require('../models/User');
+const CoinTransaction = require('../models/CoinTransaction');
 
 // GET /api/shop/products
 const getProducts = async (req, res, next) => {
@@ -20,6 +21,7 @@ const getProducts = async (req, res, next) => {
 const buyProduct = async (req, res, next) => {
   const productId = req.body?.productId || req.params?.productId;
   const customerNote = (req.body?.customerNote || '').trim();
+  const paymentMethod = req.body?.paymentMethod === 'coin' ? 'coin' : 'balance';
   const userId = req.user._id;
 
   if (!productId) {
@@ -69,13 +71,45 @@ const buyProduct = async (req, res, next) => {
         return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' });
       }
 
-      if (user.balance < product.price) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: `Số dư không đủ. Giá sản phẩm: ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có: ${user.balance.toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
-        });
+      // ─── KIỂM TRA SỐ DƯ TƯƠNG ỨNG THEO PHƯƠNG THỨC THANH TOÁN ───
+      if (paymentMethod === 'coin') {
+        if (!product.isCoinAllowed) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: 'Sản phẩm này hiện chưa hỗ trợ thanh toán bằng Coin.',
+          });
+        }
+
+        const coinPrice = Number(product.coinPrice) || 0;
+        if (coinPrice <= 0) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: 'Giá Coin của sản phẩm chưa hợp lệ. Vui lòng liên hệ Admin.',
+          });
+        }
+
+        const userCoins = user.coinBalance || 0;
+        if (userCoins < coinPrice) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: `Số dư Coin không đủ! Giá sản phẩm: ${coinPrice.toLocaleString('vi-VN')} Coin, bạn đang có: ${userCoins.toLocaleString('vi-VN')} Coin. Hãy vượt thêm link tại mục Nhiệm vụ để nhận Coin miễn phí.`,
+          });
+        }
+      } else {
+        if (user.balance < product.price) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: `Số dư không đủ. Giá sản phẩm: ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có: ${user.balance.toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
+          });
+        }
       }
 
       const isManual = product.productType === 'manual';
@@ -116,11 +150,22 @@ const buyProduct = async (req, res, next) => {
         }
       }
 
-      const updatedUser = await User.findByIdAndUpdate(
-        userId,
-        { $inc: { balance: -product.price } },
-        { new: true, session }
-      );
+      // Trừ tiền tương ứng
+      let updatedUser;
+      if (paymentMethod === 'coin') {
+        const coinPrice = Number(product.coinPrice);
+        updatedUser = await User.findByIdAndUpdate(
+          userId,
+          { $inc: { coinBalance: -coinPrice } },
+          { new: true, session }
+        );
+      } else {
+        updatedUser = await User.findByIdAndUpdate(
+          userId,
+          { $inc: { balance: -product.price } },
+          { new: true, session }
+        );
+      }
 
       const orderStatus = isManual ? 'pending' : 'completed';
       const [order] = await Order.create(
@@ -129,7 +174,9 @@ const buyProduct = async (req, res, next) => {
             userId,
             productId: product._id,
             secretLink: deliveredLink,
-            pricePaid: product.price,
+            pricePaid: paymentMethod === 'coin' ? 0 : product.price,
+            paymentMethod,
+            coinsPaid: paymentMethod === 'coin' ? product.coinPrice : 0,
             productTitle: product.title,
             status: orderStatus,
             customerNote,
@@ -138,6 +185,23 @@ const buyProduct = async (req, res, next) => {
         ],
         { session }
       );
+
+      // Nếu thanh toán bằng Coin, ghi nhật ký CoinTransaction
+      if (paymentMethod === 'coin') {
+        await CoinTransaction.create(
+          [
+            {
+              userId,
+              type: 'purchase',
+              amount: -product.coinPrice,
+              balanceAfter: updatedUser.coinBalance,
+              description: `Mua sản phẩm: ${product.title}`,
+              referenceId: order._id,
+            },
+          ],
+          { session }
+        );
+      }
 
       await session.commitTransaction();
       session.endSession();
@@ -149,6 +213,7 @@ const buyProduct = async (req, res, next) => {
           : 'Mua hàng thành công! Đã nhận được liên kết bí mật.',
         order,
         newBalance: updatedUser.balance,
+        newCoinBalance: updatedUser.coinBalance,
         secretItem: deliveredLink,
       });
     } else {
@@ -163,6 +228,24 @@ const buyProduct = async (req, res, next) => {
           success: false,
           message: `Vui lòng cung cấp: ${product.customRequirementLabel}`,
         });
+      }
+
+      // Kiểm tra hỗ trợ Coin nếu chọn coin
+      if (paymentMethod === 'coin') {
+        if (!product.isCoinAllowed) {
+          return res.status(400).json({
+            success: false,
+            message: 'Sản phẩm này hiện chưa hỗ trợ thanh toán bằng Coin.',
+          });
+        }
+
+        const coinPrice = Number(product.coinPrice) || 0;
+        if (coinPrice <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Giá Coin của sản phẩm chưa hợp lệ.',
+          });
+        }
       }
 
       const isManual = product.productType === 'manual';
@@ -193,20 +276,34 @@ const buyProduct = async (req, res, next) => {
       }
 
       // Trừ tiền nguyên tử
-      const updatedUser = await User.findOneAndUpdate(
-        { _id: userId, balance: { $gte: product.price } },
-        { $inc: { balance: -product.price } },
-        { new: true }
-      );
+      let updatedUser;
+      if (paymentMethod === 'coin') {
+        const coinPrice = Number(product.coinPrice);
+        updatedUser = await User.findOneAndUpdate(
+          { _id: userId, coinBalance: { $gte: coinPrice } },
+          { $inc: { coinBalance: -coinPrice } },
+          { new: true }
+        );
+      } else {
+        updatedUser = await User.findOneAndUpdate(
+          { _id: userId, balance: { $gte: product.price } },
+          { $inc: { balance: -product.price } },
+          { new: true }
+        );
+      }
 
       if (!updatedUser) {
         // Rollback lại kho nếu đã trừ
         if (deliveredLink) {
           await SecretVault.findOneAndUpdate({ secretLink: deliveredLink }, { isUsed: false });
         }
+        const currentUser = await User.findById(userId);
         return res.status(400).json({
           success: false,
-          message: 'Số dư không đủ để thực hiện thanh toán.',
+          message:
+            paymentMethod === 'coin'
+              ? `Số dư Coin không đủ (${(currentUser?.coinBalance || 0).toLocaleString('vi-VN')} / ${product.coinPrice} Coin).`
+              : 'Số dư không đủ để thực hiện thanh toán.',
         });
       }
 
@@ -219,12 +316,25 @@ const buyProduct = async (req, res, next) => {
         userId,
         productId: product._id,
         secretLink: deliveredLink,
-        pricePaid: product.price,
+        pricePaid: paymentMethod === 'coin' ? 0 : product.price,
+        paymentMethod,
+        coinsPaid: paymentMethod === 'coin' ? product.coinPrice : 0,
         productTitle: product.title,
         status: orderStatus,
         customerNote,
         cancelNote: '',
       });
+
+      if (paymentMethod === 'coin') {
+        await CoinTransaction.create({
+          userId,
+          type: 'purchase',
+          amount: -product.coinPrice,
+          balanceAfter: updatedUser.coinBalance,
+          description: `Mua sản phẩm: ${product.title}`,
+          referenceId: order._id,
+        });
+      }
 
       return res.status(200).json({
         success: true,
@@ -233,6 +343,7 @@ const buyProduct = async (req, res, next) => {
           : 'Mua hàng thành công! Đã nhận được liên kết bí mật.',
         order,
         newBalance: updatedUser.balance,
+        newCoinBalance: updatedUser.coinBalance,
         secretItem: deliveredLink,
       });
     }

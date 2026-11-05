@@ -49,6 +49,18 @@ const orderSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Hình thức thanh toán: 'balance' (Ví VNĐ) hoặc 'coin' (Ví Coin)
+    paymentMethod: {
+      type: String,
+      enum: ['balance', 'coin'],
+      default: 'balance',
+    },
+    // Số coin đã thanh toán nếu dùng ví coin
+    coinsPaid: {
+      type: Number,
+      default: 0,
+      min: [0, 'coinsPaid cannot be negative'],
+    },
   },
   { timestamps: true }
 );

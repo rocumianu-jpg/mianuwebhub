@@ -5,6 +5,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const SecretVault = require('../models/SecretVault');
 const User = require('../models/User');
+const CoinTransaction = require('../models/CoinTransaction');
 
 /**
  * GET /api/orders/my
@@ -28,6 +29,8 @@ const getMyOrders = async (req, res, next) => {
  */
 const buyProduct = async (req, res, next) => {
   const productId = req.body?.productId || req.params?.productId;
+  const customerNote = (req.body?.customerNote || '').trim();
+  const paymentMethod = req.body?.paymentMethod === 'coin' ? 'coin' : 'balance';
   const userId = req.user._id;
 
   if (!productId) {
@@ -67,13 +70,33 @@ const buyProduct = async (req, res, next) => {
         return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' });
       }
 
-      if (user.balance < product.price) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${user.balance.toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
-        });
+      if (paymentMethod === 'coin') {
+        if (!product.isCoinAllowed) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: 'Sản phẩm này hiện chưa hỗ trợ thanh toán bằng Coin.',
+          });
+        }
+        const coinPrice = Number(product.coinPrice) || 0;
+        if ((user.coinBalance || 0) < coinPrice) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: `Số dư Coin không đủ. Giá: ${coinPrice} Coin, hiện có: ${user.coinBalance || 0} Coin.`,
+          });
+        }
+      } else {
+        if (user.balance < product.price) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: `Số dư không đủ. Giá sản phẩm là ${product.price.toLocaleString('vi-VN')} đ, số dư hiện có là ${user.balance.toLocaleString('vi-VN')} đ. Vui lòng nạp thêm tiền.`,
+          });
+        }
       }
 
       const isManual = product.productType === 'manual';

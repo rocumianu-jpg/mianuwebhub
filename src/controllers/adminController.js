@@ -5,6 +5,7 @@ const SecretVault = require('../models/SecretVault');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const Notification = require('../models/Notification');
+const CoinTransaction = require('../models/CoinTransaction');
 
 /* ─── Products ──────────────────────────────────────────────────────── */
 
@@ -32,6 +33,8 @@ const createProduct = async (req, res, next) => {
       secretItem,
       detailedDescription,
       customRequirementLabel,
+      isCoinAllowed,
+      coinPrice,
     } = req.body;
 
     if (!title || price === undefined) {
@@ -66,6 +69,8 @@ const createProduct = async (req, res, next) => {
       subCategory: subCategory ? subCategory.trim() : 'Mặc định',
       secretItem: secretItem ? secretItem.trim() : '',
       secretLinks,
+      isCoinAllowed: Boolean(isCoinAllowed),
+      coinPrice: Number(coinPrice) || 0,
     });
 
     if (secretItem && secretItem.trim()) {
@@ -109,6 +114,8 @@ const updateProduct = async (req, res, next) => {
       secretItem,
       detailedDescription,
       customRequirementLabel,
+      isCoinAllowed,
+      coinPrice,
     } = req.body;
 
     const product = await Product.findById(id);
@@ -155,6 +162,8 @@ const updateProduct = async (req, res, next) => {
     }
     if (platform !== undefined) product.platform = platform.trim();
     if (subCategory !== undefined) product.subCategory = subCategory.trim();
+    if (isCoinAllowed !== undefined) product.isCoinAllowed = Boolean(isCoinAllowed);
+    if (coinPrice !== undefined) product.coinPrice = Number(coinPrice) || 0;
 
     if (secretItem !== undefined) {
       const trimmedSecret = secretItem.trim();
@@ -556,9 +565,25 @@ const updateOrderStatus = async (req, res, next) => {
     // ─── TỰ ĐỘNG HOÀN TIỀN NẾU HỦY ĐƠN ───
     if (status === 'cancelled') {
       if (!order.refunded) {
-        await User.findByIdAndUpdate(order.userId, {
-          $inc: { balance: order.pricePaid },
-        });
+        if (order.paymentMethod === 'coin' && order.coinsPaid > 0) {
+          const updatedUser = await User.findByIdAndUpdate(
+            order.userId,
+            { $inc: { coinBalance: order.coinsPaid } },
+            { new: true }
+          );
+          await CoinTransaction.create({
+            userId: order.userId,
+            type: 'refund',
+            amount: order.coinsPaid,
+            balanceAfter: updatedUser ? updatedUser.coinBalance : 0,
+            description: `Hoàn ${order.coinsPaid} Coin do đơn hàng #${order._id.toString().slice(-6)} bị hủy`,
+            referenceId: order._id,
+          });
+        } else if (order.pricePaid > 0) {
+          await User.findByIdAndUpdate(order.userId, {
+            $inc: { balance: order.pricePaid },
+          });
+        }
         order.refunded = true;
       }
       order.cancelNote = cancelNote && cancelNote.trim()
