@@ -59,6 +59,18 @@ const taskSchema = new mongoose.Schema(
       default: 'Link',
       trim: true,
     },
+    // Loại cơ chế API: standard (Webhook tĩnh) | phienchoso_json (Gọi Developer API sinh link)
+    apiType: {
+      type: String,
+      enum: ['standard', 'phienchoso_json'],
+      default: 'standard',
+    },
+    // API Token của Admin từ PhienChoSo (hoặc mạng tương đương)
+    apiToken: {
+      type: String,
+      default: '',
+      trim: true,
+    },
   },
   { timestamps: true }
 );
