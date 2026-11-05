@@ -142,6 +142,7 @@ const getMe = (req, res) => {
       email: user.email || '',
       role: user.role,
       balance: user.balance,
+      coinBalance: user.coinBalance || 0,
       depositCode: user.depositCode,
       isBanned: user.isBanned || false,
     },
