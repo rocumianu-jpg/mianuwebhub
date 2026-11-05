@@ -83,6 +83,11 @@ const productSchema = new mongoose.Schema(
       default: 0,
       min: [0, 'Coin price cannot be negative'],
     },
+    // Đánh dấu sản phẩm bán chạy nổi bật (Best Seller)
+    isBestSeller: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

@@ -35,6 +35,7 @@ const createProduct = async (req, res, next) => {
       customRequirementLabel,
       isCoinAllowed,
       coinPrice,
+      isBestSeller,
     } = req.body;
 
     if (!title || price === undefined) {
@@ -71,6 +72,7 @@ const createProduct = async (req, res, next) => {
       secretLinks,
       isCoinAllowed: Boolean(isCoinAllowed),
       coinPrice: Number(coinPrice) || 0,
+      isBestSeller: Boolean(isBestSeller),
     });
 
     if (secretItem && secretItem.trim()) {
@@ -116,6 +118,7 @@ const updateProduct = async (req, res, next) => {
       customRequirementLabel,
       isCoinAllowed,
       coinPrice,
+      isBestSeller,
     } = req.body;
 
     const product = await Product.findById(id);
@@ -164,6 +167,7 @@ const updateProduct = async (req, res, next) => {
     if (subCategory !== undefined) product.subCategory = subCategory.trim();
     if (isCoinAllowed !== undefined) product.isCoinAllowed = Boolean(isCoinAllowed);
     if (coinPrice !== undefined) product.coinPrice = Number(coinPrice) || 0;
+    if (isBestSeller !== undefined) product.isBestSeller = Boolean(isBestSeller);
 
     if (secretItem !== undefined) {
       const trimmedSecret = secretItem.trim();
