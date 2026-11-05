@@ -347,9 +347,10 @@ const startTask = async (req, res, next) => {
           ? task.targetUrl.split('?')[0]
           : 'https://api.phienchoso.com/tukhoa-dev.php';
 
+      const encodedPostbackUrl = encodeURIComponent(mianuPostbackUrl);
       const phienChoSoRequestUrl = `${apiEndpoint}?token=${encodeURIComponent(
         adminToken
-      )}&url=${encodeURIComponent(mianuPostbackUrl)}`;
+      )}&url=${encodedPostbackUrl}&url_duphong=${encodedPostbackUrl}`;
 
       try {
         const phienChoSoRes = await axios.get(phienChoSoRequestUrl, {
