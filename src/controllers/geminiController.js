@@ -4,11 +4,11 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
-const telegramUserbot = require('../services/telegramUserbot');
+const geminiQueue = require('../services/geminiQueue');
 
 /**
  * POST /api/gemini/start
- * Nhận gmail, trừ tiền ví, gọi Userbot gửi /run và gửi gmail tới @ngtrungthanhvip_bot
+ * Nhận gmail, trừ tiền ví, đưa vào Hàng Đợi (Queue) hoặc bắt đầu phiên nếu bot rảnh
  */
 const startGemini = async (req, res, next) => {
   try {
@@ -77,41 +77,102 @@ const startGemini = async (req, res, next) => {
       pricePaid: price,
       secretLink: '',
       status: 'pending',
-      cancelNote: `Đang gửi lệnh kích hoạt cho email ${gmail.trim()}`,
+      customerNote: `Gmail: ${gmail.trim()}`,
+      cancelNote: `Đang kết nối bot Telegram kích hoạt cho ${gmail.trim()}`,
       refunded: false,
     });
 
     try {
-      // Gọi service Userbot giao tiếp với @ngtrungthanhvip_bot
-      const botResult = await telegramUserbot.startGeminiActivation(gmail.trim(), order._id.toString());
+      // Đưa vào Queue hoặc bắt đầu ngay lập tức
+      const queueResult = await geminiQueue.enqueueOrStart(
+        userId.toString(),
+        order._id.toString(),
+        gmail.trim(),
+        price
+      );
 
       return res.status(200).json({
         success: true,
-        status: 'waiting_otp',
+        status: queueResult.status, // 'waiting_otp' hoặc 'in_queue'
         orderId: order._id,
+        queueId: queueResult.queueId,
+        position: queueResult.position,
+        totalInQueue: queueResult.totalInQueue,
         newBalance: updatedUser.balance,
-        message: 'Bot đã tiếp nhận Gmail và yêu cầu mã OTP. Vui lòng kiểm tra hộp thư và nhập 6 số OTP.',
-        rawPrompt: botResult.rawPrompt,
+        message: queueResult.message,
+        rawPrompt: queueResult.rawPrompt,
       });
-    } catch (botErr) {
-      console.error('❌ [Userbot Start Error]:', botErr.message);
+    } catch (queueErr) {
+      console.error('❌ [Gemini Queue Start Error]:', queueErr.message);
 
-      // Nếu bot báo lỗi ngay từ đầu -> Tự động hoàn tiền ví cho User và hủy đơn
+      // Nếu lỗi ngay lập tức -> Hoàn tiền ví
       await User.findByIdAndUpdate(userId, { $inc: { balance: price } });
-
       order.status = 'cancelled';
-      order.cancelNote = botErr.message || 'Lỗi giao tiếp với Telegram Bot khi gửi Gmail.';
+      order.cancelNote = queueErr.message || 'Lỗi kết nối bot Telegram.';
       order.refunded = true;
       await order.save();
 
       return res.status(400).json({
         success: false,
         status: 'cancelled',
-        message: botErr.message || 'Không thể bắt đầu phiên kích hoạt từ Bot. Tiền đã được hoàn lại vào ví.',
+        message: queueErr.message || 'Không thể bắt đầu phiên kích hoạt từ Bot. Tiền đã được hoàn lại vào ví.',
         cancelNote: order.cancelNote,
         orderId: order._id,
       });
     }
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/gemini/queue-status
+ * Tra cứu vị trí hàng đợi và trạng thái phiên hiện tại
+ */
+const getQueueStatus = async (req, res, next) => {
+  try {
+    const { orderId, queueId } = req.query;
+
+    if (!orderId && !queueId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thiếu orderId hoặc queueId để kiểm tra trạng thái.',
+      });
+    }
+
+    const statusInfo = geminiQueue.getQueueStatus(orderId, queueId);
+
+    // Nếu không còn trong RAM, kiểm tra xem DB đã ghi nhận hoàn thành hay bị hủy chưa
+    if (statusInfo.status === 'not_found' && orderId && mongoose.Types.ObjectId.isValid(orderId)) {
+      const order = await Order.findById(orderId);
+      if (order) {
+        if (order.status === 'completed') {
+          return res.json({
+            success: true,
+            inQueue: false,
+            isMyTurn: false,
+            status: 'completed',
+            link: order.secretLink,
+            orderId: order._id,
+          });
+        }
+        if (order.status === 'cancelled') {
+          return res.json({
+            success: true,
+            inQueue: false,
+            isMyTurn: false,
+            status: 'cancelled',
+            error: order.cancelNote || 'Đơn hàng đã bị hủy.',
+            orderId: order._id,
+          });
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      ...statusInfo,
+    });
   } catch (err) {
     next(err);
   }
@@ -133,65 +194,60 @@ const verifyGemini = async (req, res, next) => {
       });
     }
 
-    // Tìm đơn hàng tương ứng
-    let order = null;
-    if (orderId && mongoose.Types.ObjectId.isValid(orderId)) {
-      order = await Order.findOne({ _id: orderId, userId });
-    } else {
-      order = await Order.findOne({ userId, status: 'pending' }).sort({ createdAt: -1 });
+    let targetOrderId = orderId;
+    if (!targetOrderId || !mongoose.Types.ObjectId.isValid(targetOrderId)) {
+      const pendingOrder = await Order.findOne({ userId, status: 'pending' }).sort({ createdAt: -1 });
+      if (pendingOrder) {
+        targetOrderId = pendingOrder._id.toString();
+      }
     }
 
-    if (!order) {
+    if (!targetOrderId) {
       return res.status(404).json({
         success: false,
         message: 'Không tìm thấy đơn hàng đang chờ xác thực OTP.',
       });
     }
 
-    if (order.status === 'completed') {
-      return res.status(400).json({
-        success: false,
-        message: 'Đơn hàng này đã được kích hoạt thành công trước đó.',
-        link: order.secretLink,
-      });
-    }
-
-    // Gửi OTP qua Telegram Userbot
-    const verifyResult = await telegramUserbot.verifyGeminiOtp(String(otp).trim(), order._id.toString());
+    const verifyResult = await geminiQueue.verifyOtp(targetOrderId, String(otp).trim());
 
     if (verifyResult.success && verifyResult.link) {
-      // Kích hoạt thành công: Đơn hàng hoàn thành & lưu link
-      order.status = 'completed';
-      order.secretLink = verifyResult.link;
-      order.cancelNote = '';
-      await order.save();
-
       return res.status(200).json({
         success: true,
         status: 'completed',
         link: verifyResult.link,
-        orderId: order._id,
+        orderId: targetOrderId,
         message: 'Kích hoạt thành công! Dưới đây là liên kết nhận dịch vụ của bạn.',
       });
     } else {
-      // Thất bại: Hoàn tiền ví lại cho user
-      if (!order.refunded) {
-        await User.findByIdAndUpdate(order.userId, { $inc: { balance: order.pricePaid } });
-        order.refunded = true;
-      }
-
-      order.status = 'cancelled';
-      order.cancelNote = verifyResult.reason || 'Bot báo sai mã OTP hoặc không lấy được link.';
-      await order.save();
-
       return res.status(400).json({
         success: false,
         status: 'cancelled',
-        message: 'Xác thực OTP thất bại. Hệ thống đã tự động hoàn tiền vào số dư ví của bạn.',
-        cancelNote: order.cancelNote,
-        orderId: order._id,
+        message: verifyResult.reason || 'Xác thực OTP thất bại. Hệ thống đã tự động hoàn tiền vào số dư ví của bạn.',
+        cancelNote: verifyResult.reason,
+        orderId: targetOrderId,
       });
     }
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      status: 'error',
+      message: err.message || 'Lỗi xác thực OTP.',
+    });
+  }
+};
+
+/**
+ * POST /api/gemini/cancel-queue
+ * Người dùng hủy phiên hoặc rời hàng đợi
+ */
+const cancelQueue = async (req, res, next) => {
+  try {
+    const { orderId, queueId } = req.body;
+    const userId = req.user._id;
+
+    const result = await geminiQueue.cancelQueue(orderId, queueId, userId);
+    return res.json(result);
   } catch (err) {
     next(err);
   }
@@ -199,5 +255,7 @@ const verifyGemini = async (req, res, next) => {
 
 module.exports = {
   startGemini,
+  getQueueStatus,
   verifyGemini,
+  cancelQueue,
 };

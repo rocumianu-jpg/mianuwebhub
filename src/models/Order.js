@@ -38,6 +38,12 @@ const orderSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    // Thông tin yêu cầu từ khách hàng (Link profile, Email...)
+    customerNote: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     // Cờ đánh dấu đã hoàn tiền ví hay chưa
     refunded: {
       type: Boolean,

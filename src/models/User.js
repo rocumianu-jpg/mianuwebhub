@@ -12,6 +12,22 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    displayName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    avatarUrl: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    email: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: '',
+    },
     passwordHash: {
       type: String,
       required: [true, 'Password hash is required'],
@@ -25,6 +41,20 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: [0, 'Balance cannot be negative'],
+    },
+    depositCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+    },
+    isBanned: {
+      type: Boolean,
+      default: false,
+    },
+    banReason: {
+      type: String,
+      default: '',
     },
   },
   { timestamps: true }

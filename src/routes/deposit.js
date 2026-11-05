@@ -6,6 +6,7 @@ const { protect } = require('../middleware/auth');
 
 // GET /api/deposit/info (protected)
 router.get('/info', protect, (req, res) => {
+  const depositCode = req.user.depositCode || '000001';
   return res.json({
     success: true,
     depositInfo: {
@@ -13,7 +14,9 @@ router.get('/info', protect, (req, res) => {
       bankCode: 'MB',
       accountNumber: '0987654321',
       accountHolder: 'NGUYEN VAN A',
-      syntax: `NAP ${req.user.username.toUpperCase()}`,
+      depositCode,
+      syntax: `NAP ${depositCode}`,
+      status: 'Chờ Admin duyệt / Xử lý nhanh',
       note: 'Vui lòng điền đúng cú pháp chuyển khoản.',
     },
   });

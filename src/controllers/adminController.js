@@ -4,6 +4,7 @@ const Product = require('../models/Product');
 const SecretVault = require('../models/SecretVault');
 const User = require('../models/User');
 const Order = require('../models/Order');
+const Notification = require('../models/Notification');
 
 /* ─── Products ──────────────────────────────────────────────────────── */
 
@@ -29,6 +30,8 @@ const createProduct = async (req, res, next) => {
       platform,
       subCategory,
       secretItem,
+      detailedDescription,
+      customRequirementLabel,
     } = req.body;
 
     if (!title || price === undefined) {
@@ -45,14 +48,20 @@ const createProduct = async (req, res, next) => {
       }
     }
 
+    const normalizedProductType = ['manual', 'bot_gemini'].includes(productType)
+      ? productType
+      : 'instant';
+
     const product = await Product.create({
       title,
       imageUrl: imageUrl || '',
       price: Number(price),
       stock: initialStock,
       description: description || '',
+      detailedDescription: detailedDescription || '',
+      customRequirementLabel: customRequirementLabel ? customRequirementLabel.trim() : '',
       isActive: isActive !== undefined ? Boolean(isActive) : true,
-      productType: productType === 'manual' ? 'manual' : 'instant',
+      productType: normalizedProductType,
       platform: platform ? platform.trim() : 'Khác',
       subCategory: subCategory ? subCategory.trim() : 'Mặc định',
       secretItem: secretItem ? secretItem.trim() : '',
@@ -65,6 +74,17 @@ const createProduct = async (req, res, next) => {
         secretLink: secretItem.trim(),
         isUsed: false,
       });
+    }
+
+    // Tự động phát thông báo sản phẩm mới
+    try {
+      await Notification.create({
+        title: `✨ Sản phẩm mới: ${product.title}`,
+        message: `Sản phẩm "${product.title}" vừa được mở bán với giá ${product.price.toLocaleString('vi-VN')} đ!`,
+        type: 'system',
+      });
+    } catch (notifErr) {
+      console.warn('Lỗi tạo notification sản phẩm mới:', notifErr.message);
     }
 
     return res.status(201).json({ success: true, product });
@@ -87,6 +107,8 @@ const updateProduct = async (req, res, next) => {
       platform,
       subCategory,
       secretItem,
+      detailedDescription,
+      customRequirementLabel,
     } = req.body;
 
     const product = await Product.findById(id);
@@ -94,14 +116,42 @@ const updateProduct = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm' });
     }
 
+    // Tự động kiểm tra biến động giá để tạo thông báo
+    if (price !== undefined && Number(price) !== product.price) {
+      const oldPrice = product.price;
+      const newPrice = Number(price);
+      const isDiscount = newPrice < oldPrice;
+
+      try {
+        await Notification.create({
+          title: isDiscount
+            ? `📉 Giảm giá: ${product.title}`
+            : `📈 Tăng giá: ${product.title}`,
+          message: `${isDiscount ? 'Giảm giá' : 'Tăng giá'} từ: ${oldPrice.toLocaleString('vi-VN')} đ -> ${newPrice.toLocaleString('vi-VN')} đ`,
+          type: 'price_change',
+          data: {
+            productId: product._id,
+            productTitle: product.title,
+            oldPrice,
+            newPrice,
+            direction: isDiscount ? 'down' : 'up',
+          },
+        });
+      } catch (notifErr) {
+        console.warn('Lỗi tạo notification thay đổi giá:', notifErr.message);
+      }
+    }
+
     if (title !== undefined) product.title = title;
     if (imageUrl !== undefined) product.imageUrl = imageUrl;
     if (price !== undefined) product.price = Number(price);
     if (stock !== undefined) product.stock = Number(stock);
     if (description !== undefined) product.description = description;
+    if (detailedDescription !== undefined) product.detailedDescription = detailedDescription;
+    if (customRequirementLabel !== undefined) product.customRequirementLabel = customRequirementLabel.trim();
     if (isActive !== undefined) product.isActive = Boolean(isActive);
     if (productType !== undefined) {
-      product.productType = productType === 'manual' ? 'manual' : 'instant';
+      product.productType = ['manual', 'bot_gemini'].includes(productType) ? productType : 'instant';
     }
     if (platform !== undefined) product.platform = platform.trim();
     if (subCategory !== undefined) product.subCategory = subCategory.trim();
@@ -273,34 +323,188 @@ const getAllUsers = async (req, res, next) => {
   }
 };
 
-const topUpUser = async (req, res, next) => {
+/**
+ * POST /api/admin/users/:id/balance
+ * Điều chỉnh số dư người dùng với 3 chế độ:
+ * - 'add' (+): Cộng thêm vào số dư
+ * - 'subtract' (-): Trừ bớt số dư (không âm)
+ * - 'set' (=): Đặt số dư cố định chính xác (ví dụ 1000 hoặc 0)
+ */
+const adjustUserBalance = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { amount } = req.body;
+    const { mode, amount } = req.body;
 
-    if (!amount || typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({ success: false, message: 'Số tiền nạp phải là số dương hợp lệ' });
+    const numAmount = Number(amount);
+    if (isNaN(numAmount) || numAmount < 0) {
+      return res.status(400).json({ success: false, message: 'Số tiền phải là một số không âm hợp lệ.' });
     }
 
-    const user = await User.findByIdAndUpdate(
-      id,
-      { $inc: { balance: amount } },
-      { new: true, runValidators: true }
-    ).select('-passwordHash');
-
+    const user = await User.findById(id).select('-passwordHash');
     if (!user) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng' });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' });
+    }
+
+    const oldBalance = user.balance || 0;
+    let newBalance = oldBalance;
+
+    if (mode === 'add') {
+      newBalance = oldBalance + numAmount;
+    } else if (mode === 'subtract') {
+      newBalance = Math.max(0, oldBalance - numAmount);
+    } else if (mode === 'set') {
+      newBalance = numAmount;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Chế độ điều chỉnh không hợp lệ (phải là add, subtract hoặc set).',
+      });
+    }
+
+    user.balance = newBalance;
+    await user.save();
+
+    const changeDesc =
+      mode === 'add'
+        ? `+${numAmount.toLocaleString('vi-VN')} đ`
+        : mode === 'subtract'
+        ? `-${numAmount.toLocaleString('vi-VN')} đ`
+        : `đặt thành ${numAmount.toLocaleString('vi-VN')} đ`;
+
+    // Tự động gửi thông báo biến động số dư cho User
+    try {
+      await Notification.create({
+        userId: user._id,
+        title: '💰 Biến động số dư ví',
+        message: `Số dư ví của bạn vừa được Admin điều chỉnh (${changeDesc}). Số dư hiện tại: ${newBalance.toLocaleString('vi-VN')} đ.`,
+        type: 'status',
+      });
+    } catch (notifErr) {
+      console.warn('Lỗi tạo notification số dư:', notifErr.message);
     }
 
     return res.json({
       success: true,
-      message: `Đã cộng ${amount.toLocaleString('vi-VN')} đ vào ví ${user.username}`,
+      message: `Đã điều chỉnh số dư của ${user.username} (${changeDesc}). Số dư mới: ${newBalance.toLocaleString('vi-VN')} đ`,
       user: {
         id: user._id,
+        _id: user._id,
         username: user.username,
+        email: user.email,
         role: user.role,
         balance: user.balance,
+        depositCode: user.depositCode,
+        isBanned: user.isBanned,
+        banReason: user.banReason,
       },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const topUpUser = async (req, res, next) => {
+  req.body.mode = 'add';
+  return adjustUserBalance(req, res, next);
+};
+
+/**
+ * PUT /api/admin/users/:id
+ * Chỉnh sửa toàn bộ thông tin của User: Username, Email, depositCode, Role, isBanned, banReason
+ */
+const updateUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { username, email, depositCode, role, isBanned, banReason } = req.body;
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' });
+    }
+
+    // Kiểm tra username nếu thay đổi
+    if (username && username.toLowerCase().trim() !== user.username) {
+      const cleanUsername = username.toLowerCase().trim();
+      const existingUser = await User.findOne({ username: cleanUsername, _id: { $ne: id } });
+      if (existingUser) {
+        return res.status(409).json({ success: false, message: 'Tên đăng nhập này đã được sử dụng.' });
+      }
+      user.username = cleanUsername;
+    }
+
+    // Kiểm tra depositCode nếu thay đổi
+    if (depositCode !== undefined && depositCode.trim() !== (user.depositCode || '')) {
+      const cleanCode = depositCode.trim();
+      if (cleanCode) {
+        const existingCode = await User.findOne({ depositCode: cleanCode, _id: { $ne: id } });
+        if (existingCode) {
+          return res.status(409).json({ success: false, message: 'Mã định danh nạp tiền này đã tồn tại.' });
+        }
+        user.depositCode = cleanCode;
+      } else {
+        user.depositCode = undefined;
+      }
+    }
+
+    if (email !== undefined) {
+      user.email = email.toLowerCase().trim();
+    }
+
+    if (role && ['user', 'admin'].includes(role)) {
+      user.role = role;
+    }
+
+    if (isBanned !== undefined) {
+      user.isBanned = Boolean(isBanned);
+      if (user.isBanned && banReason) {
+        user.banReason = banReason.trim();
+      } else if (!user.isBanned) {
+        user.banReason = '';
+      }
+    }
+
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: `Cập nhật thông tin người dùng ${user.username} thành công!`,
+      user: {
+        id: user._id,
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        balance: user.balance,
+        depositCode: user.depositCode,
+        isBanned: user.isBanned,
+        banReason: user.banReason,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/admin/users/:id
+ * Xóa vĩnh viễn tài khoản người dùng
+ */
+const deleteUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (req.user && req.user._id.toString() === id) {
+      return res.status(400).json({ success: false, message: 'Bạn không thể tự xóa tài khoản của chính mình!' });
+    }
+
+    const user = await User.findByIdAndDelete(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng để xóa.' });
+    }
+
+    return res.json({
+      success: true,
+      message: `Đã xóa vĩnh viễn người dùng ${user.username}.`,
     });
   } catch (err) {
     next(err);
@@ -316,7 +520,7 @@ const topUpUser = async (req, res, next) => {
 const getAllOrders = async (req, res, next) => {
   try {
     const orders = await Order.find()
-      .populate('userId', 'username balance')
+      .populate('userId', 'username balance email depositCode')
       .populate('productId', 'title imageUrl productType price')
       .sort({ createdAt: -1 });
 
@@ -388,6 +592,72 @@ const updateOrderStatus = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/admin/orders/bulk-update
+ * Thao tác hàng loạt trên các đơn hàng đã chọn:
+ * - 'completed': Hoàn thành tất cả các đơn đã chọn (kèm secretLink nếu có)
+ * - 'cancelled': Hủy và tự động hoàn tiền vào ví cho tất cả khách hàng tương ứng
+ */
+const bulkUpdateOrders = async (req, res, next) => {
+  try {
+    const { orderIds, action, cancelNote, secretLink } = req.body;
+
+    if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Vui lòng chọn ít nhất 1 đơn hàng để thao tác.' });
+    }
+
+    if (!['completed', 'cancelled'].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Hành động không hợp lệ (chỉ hỗ trợ completed hoặc cancelled).',
+      });
+    }
+
+    const orders = await Order.find({ _id: { $in: orderIds } });
+    if (orders.length === 0) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy đơn hàng nào trong danh sách đã chọn.' });
+    }
+
+    let affectedCount = 0;
+    let totalRefunded = 0;
+
+    for (const order of orders) {
+      if (action === 'cancelled') {
+        if (!order.refunded) {
+          await User.findByIdAndUpdate(order.userId, { $inc: { balance: order.pricePaid } });
+          order.refunded = true;
+          totalRefunded += order.pricePaid;
+        }
+        order.status = 'cancelled';
+        order.cancelNote = cancelNote && cancelNote.trim()
+          ? cancelNote.trim()
+          : 'Đơn hàng được Admin hủy và hoàn tiền hàng loạt.';
+      } else if (action === 'completed') {
+        order.status = 'completed';
+        if (secretLink && secretLink.trim()) {
+          order.secretLink = secretLink.trim();
+        }
+      }
+      await order.save();
+      affectedCount++;
+    }
+
+    const message =
+      action === 'cancelled'
+        ? `Đã hủy ${affectedCount} đơn hàng thành công và tự động hoàn lại tổng cộng ${totalRefunded.toLocaleString('vi-VN')} đ vào ví khách hàng!`
+        : `Đã duyệt hoàn thành ${affectedCount} đơn hàng thành công!`;
+
+    return res.json({
+      success: true,
+      message,
+      affectedCount,
+      totalRefunded,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getAllProducts,
   createProduct,
@@ -398,7 +668,11 @@ module.exports = {
   getProductVaultStats,
   getVaultStats,
   getAllUsers,
+  adjustUserBalance,
   topUpUser,
+  updateUser,
+  deleteUser,
   getAllOrders,
   updateOrderStatus,
+  bulkUpdateOrders,
 };

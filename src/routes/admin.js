@@ -12,9 +12,13 @@ const {
   getProductVaultStats,
   getVaultStats,
   getAllUsers,
+  adjustUserBalance,
   topUpUser,
+  updateUser,
+  deleteUser,
   getAllOrders,
   updateOrderStatus,
+  bulkUpdateOrders,
 } = require('../controllers/adminController');
 
 const { protect, adminOnly } = require('../middleware/auth');
@@ -37,9 +41,13 @@ router.get('/vault-stats', getVaultStats);
 /* ─── User routes ────────────────────────────── */
 router.get('/users', getAllUsers);
 router.post('/users/:id/topup', topUpUser);
+router.post('/users/:id/balance', adjustUserBalance);
+router.put('/users/:id', updateUser);
+router.delete('/users/:id', deleteUser);
 
 /* ─── Order management & Refund routes ───────── */
 router.get('/orders', getAllOrders);
 router.put('/orders/:id/status', updateOrderStatus);
+router.post('/orders/bulk-update', bulkUpdateOrders);
 
 module.exports = router;

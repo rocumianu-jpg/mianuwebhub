@@ -19,6 +19,7 @@ const getProducts = async (req, res, next) => {
 // POST /api/shop/buy
 const buyProduct = async (req, res, next) => {
   const productId = req.body?.productId || req.params?.productId;
+  const customerNote = (req.body?.customerNote || '').trim();
   const userId = req.user._id;
 
   if (!productId) {
@@ -50,6 +51,15 @@ const buyProduct = async (req, res, next) => {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({ success: false, message: 'Sản phẩm hiện đang tạm ngừng kinh doanh.' });
+      }
+
+      if (product.customRequirementLabel && !customerNote) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: `Vui lòng cung cấp: ${product.customRequirementLabel}`,
+        });
       }
 
       const user = await User.findById(userId).session(session);
@@ -122,6 +132,7 @@ const buyProduct = async (req, res, next) => {
             pricePaid: product.price,
             productTitle: product.title,
             status: orderStatus,
+            customerNote,
             cancelNote: '',
           },
         ],
@@ -145,6 +156,13 @@ const buyProduct = async (req, res, next) => {
       const product = await Product.findById(productId);
       if (!product || !product.isActive) {
         return res.status(404).json({ success: false, message: 'Sản phẩm không khả dụng.' });
+      }
+
+      if (product.customRequirementLabel && !customerNote) {
+        return res.status(400).json({
+          success: false,
+          message: `Vui lòng cung cấp: ${product.customRequirementLabel}`,
+        });
       }
 
       const isManual = product.productType === 'manual';
@@ -204,6 +222,7 @@ const buyProduct = async (req, res, next) => {
         pricePaid: product.price,
         productTitle: product.title,
         status: orderStatus,
+        customerNote,
         cancelNote: '',
       });
 

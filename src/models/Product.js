@@ -37,6 +37,17 @@ const productSchema = new mongoose.Schema(
       enum: ['instant', 'manual', 'bot_gemini'],
       default: 'instant',
     },
+    // Mô tả chi tiết (Bài viết chi tiết, chế độ bảo hành, hướng dẫn sử dụng)
+    detailedDescription: {
+      type: String,
+      default: '',
+    },
+    // Yêu cầu thông tin từ người mua trước khi thanh toán (vd: Link profile, Email...)
+    customRequirementLabel: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     // Nền tảng (Facebook, TikTok, Instagram, YouTube, Telegram, Shopee, Discord, Software...)
     platform: {
       type: String,
