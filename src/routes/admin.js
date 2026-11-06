@@ -21,6 +21,13 @@ const {
   bulkUpdateOrders,
 } = require('../controllers/adminController');
 
+const {
+  getAllGiftCodes,
+  createGiftCode,
+  updateGiftCode,
+  deleteGiftCode,
+} = require('../controllers/giftcodeController');
+
 const { protect, adminOnly } = require('../middleware/auth');
 
 router.use(protect, adminOnly);
@@ -49,5 +56,11 @@ router.delete('/users/:id', deleteUser);
 router.get('/orders', getAllOrders);
 router.put('/orders/:id/status', updateOrderStatus);
 router.post('/orders/bulk-update', bulkUpdateOrders);
+
+/* ─── GiftCode routes ────────────────────────── */
+router.get('/giftcodes', getAllGiftCodes);
+router.post('/giftcodes', createGiftCode);
+router.put('/giftcodes/:id', updateGiftCode);
+router.delete('/giftcodes/:id', deleteGiftCode);
 
 module.exports = router;

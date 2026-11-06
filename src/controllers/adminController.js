@@ -35,6 +35,7 @@ const createProduct = async (req, res, next) => {
       customRequirementLabel,
       isCoinAllowed,
       coinPrice,
+      isCoinOnly,
       isBestSeller,
     } = req.body;
 
@@ -70,8 +71,9 @@ const createProduct = async (req, res, next) => {
       subCategory: subCategory ? subCategory.trim() : 'Mặc định',
       secretItem: secretItem ? secretItem.trim() : '',
       secretLinks,
-      isCoinAllowed: Boolean(isCoinAllowed),
+      isCoinAllowed: Boolean(isCoinAllowed || isCoinOnly),
       coinPrice: Number(coinPrice) || 0,
+      isCoinOnly: Boolean(isCoinOnly),
       isBestSeller: Boolean(isBestSeller),
     });
 
@@ -118,6 +120,7 @@ const updateProduct = async (req, res, next) => {
       customRequirementLabel,
       isCoinAllowed,
       coinPrice,
+      isCoinOnly,
       isBestSeller,
     } = req.body;
 
@@ -167,6 +170,12 @@ const updateProduct = async (req, res, next) => {
     if (subCategory !== undefined) product.subCategory = subCategory.trim();
     if (isCoinAllowed !== undefined) product.isCoinAllowed = Boolean(isCoinAllowed);
     if (coinPrice !== undefined) product.coinPrice = Number(coinPrice) || 0;
+    if (isCoinOnly !== undefined) {
+      product.isCoinOnly = Boolean(isCoinOnly);
+      if (product.isCoinOnly) {
+        product.isCoinAllowed = true;
+      }
+    }
     if (isBestSeller !== undefined) product.isBestSeller = Boolean(isBestSeller);
 
     if (secretItem !== undefined) {

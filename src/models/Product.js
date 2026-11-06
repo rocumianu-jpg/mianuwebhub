@@ -83,6 +83,11 @@ const productSchema = new mongoose.Schema(
       default: 0,
       min: [0, 'Coin price cannot be negative'],
     },
+    // Sản phẩm độc quyền chỉ đổi bằng Coin (Cấm mua bằng tiền mặt VNĐ)
+    isCoinOnly: {
+      type: Boolean,
+      default: false,
+    },
     // Đánh dấu sản phẩm bán chạy nổi bật (Best Seller)
     isBestSeller: {
       type: Boolean,

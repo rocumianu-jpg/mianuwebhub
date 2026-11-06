@@ -17,6 +17,7 @@ const announcementRoutes = require('./src/routes/announcement');
 const notificationRoutes = require('./src/routes/notifications');
 const feedbackRoutes = require('./src/routes/feedback');
 const taskRoutes = require('./src/routes/tasks');
+const giftCodeRoutes = require('./src/routes/giftcodes');
 const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -43,6 +44,7 @@ app.use('/api/announcement', announcementRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/feedbacks', feedbackRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/giftcodes', giftCodeRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is running' });

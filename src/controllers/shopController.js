@@ -71,9 +71,19 @@ const buyProduct = async (req, res, next) => {
         return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' });
       }
 
+      // ─── KIỂM TRA SẢN PHẨM ĐỘC QUYỀN COIN (CẤM MUA BẰNG TIỀN MẶT VNĐ) ───
+      if (product.isCoinOnly && paymentMethod !== 'coin') {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Sản phẩm này là vật phẩm độc quyền, chỉ cho phép đổi hoặc thanh toán bằng Coin!',
+        });
+      }
+
       // ─── KIỂM TRA SỐ DƯ TƯƠNG ỨNG THEO PHƯƠNG THỨC THANH TOÁN ───
       if (paymentMethod === 'coin') {
-        if (!product.isCoinAllowed) {
+        if (!product.isCoinAllowed && !product.isCoinOnly) {
           await session.abortTransaction();
           session.endSession();
           return res.status(400).json({

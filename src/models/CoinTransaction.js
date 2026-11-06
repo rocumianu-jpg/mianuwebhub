@@ -10,10 +10,10 @@ const coinTransactionSchema = new mongoose.Schema(
       required: [true, 'userId is required'],
       index: true,
     },
-    // task_reward (Thưởng vượt link), purchase (Mua sản phẩm), admin_adjustment (Admin chỉnh), refund (Hoàn tiền coin)
+    // task_reward (Thưởng vượt link), purchase (Mua sản phẩm), admin_adjustment (Admin chỉnh), refund (Hoàn tiền coin), gift_code (Đổi mã quà tặng)
     type: {
       type: String,
-      enum: ['task_reward', 'purchase', 'admin_adjustment', 'refund'],
+      enum: ['task_reward', 'purchase', 'admin_adjustment', 'refund', 'gift_code'],
       required: true,
       index: true,
     },
