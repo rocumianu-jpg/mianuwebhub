@@ -271,135 +271,253 @@ const getPublicTasks = async (req, res, next) => {
 };
 
 /**
+ * Khởi tạo phiên làm việc và gọi Developer API (LenTop, PhienChoSo...) để lấy link rút gọn
+ */
+async function processTaskSession({ taskId, userId, req }) {
+  const { start, end } = getTodayRange();
+
+  const task = await Task.findById(taskId);
+  if (!task || !task.isActive) {
+    const err = new Error('Nhiệm vụ không tồn tại hoặc đã tạm dừng.');
+    err.status = 404;
+    throw err;
+  }
+
+  // Kiểm tra giới hạn ngày
+  const completedToday = await TaskHistory.countDocuments({
+    userId,
+    taskId: task._id,
+    status: 'completed',
+    createdAt: { $gte: start, $lte: end },
+  });
+
+  if (completedToday >= task.dailyLimit) {
+    const err = new Error(
+      `Bạn đã đạt giới hạn tối đa của nhiệm vụ ${task.name} trong ngày hôm nay (${task.dailyLimit} lần/ngày). Vui lòng quay lại vào ngày mai!`
+    );
+    err.status = 400;
+    throw err;
+  }
+
+  // Tạo mã phiên định danh duy nhất (sessionToken)
+  const sessionToken = crypto.randomBytes(16).toString('hex');
+  const clickTime = new Date();
+
+  const taskHistory = await TaskHistory.create({
+    userId,
+    taskId: task._id,
+    taskName: task.name,
+    sessionToken,
+    clickTime,
+    status: 'started',
+    ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '',
+    userAgent: req.headers['user-agent'] || '',
+    note: 'Khởi tạo phiên vượt link',
+  });
+
+  // Xác định URL của Backend Mianu để làm Postback
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:5000';
+  const officialDomain = 'https://mianuwebhub.store';
+  const serverBaseUrl = process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? officialDomain : `${protocol}://${host}`);
+  const mianuPostbackUrl = `${serverBaseUrl}/api/tasks/postback?token=${sessionToken}`;
+  const encodedPostbackUrl = encodeURIComponent(mianuPostbackUrl);
+
+  let redirectUrl = '';
+
+  const isLentop =
+    task.apiType === 'lentop_json' ||
+    (task.targetUrl && task.targetUrl.toLowerCase().includes('lentop.one'));
+
+  const isPhienChoSo =
+    task.apiType === 'phienchoso_json' ||
+    (task.targetUrl && task.targetUrl.toLowerCase().includes('phienchoso.com'));
+
+  if (isLentop) {
+    // ─── 1. XỬ LÝ LENTOP DEVELOPER API (JSON RESPONSE) ───────────────────────
+    let lentopToken = (task.apiToken || '').trim();
+    if (!lentopToken && task.targetUrl) {
+      const match = task.targetUrl.match(/[?&]api=([^&]+)/);
+      if (match) lentopToken = decodeURIComponent(match[1]);
+    }
+
+    if (!lentopToken) {
+      taskHistory.status = 'rejected';
+      taskHistory.note = 'Lỗi: Nhiệm vụ LenTop chưa cài đặt API Token';
+      await taskHistory.save();
+      const err = new Error('Nhiệm vụ này (LenTop) chưa được Quản trị viên cài đặt API Token.');
+      err.status = 400;
+      throw err;
+    }
+
+    let lentopEndpoint = 'https://lentop.one/api';
+    if (task.targetUrl && task.targetUrl.startsWith('http') && task.targetUrl.includes('lentop.one')) {
+      lentopEndpoint = task.targetUrl.split('?')[0];
+    }
+
+    // Cập nhật đường link Postback chính thức để LenTop chuyển hướng khách về sau khi hoàn thành
+    const lentopPostbackUrl = `https://mianuwebhub.store/api/tasks/postback?token=${sessionToken}`;
+    const encodedLentopPostback = encodeURIComponent(lentopPostbackUrl);
+
+    const lentopRequestUrl = `${lentopEndpoint}?api=${encodeURIComponent(
+      lentopToken
+    )}&url=${encodedLentopPostback}`;
+
+    try {
+      const lentopRes = await axios.get(lentopRequestUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MianuWorkShop/2.0',
+        },
+      });
+
+      const resData = lentopRes.data;
+      let finalShortUrl = resData?.shortenedUrl || resData?.url || resData?.short_url;
+
+      if (finalShortUrl && typeof finalShortUrl === 'string') {
+        // Gỡ bỏ escaped slash \/ nếu có
+        finalShortUrl = finalShortUrl.replace(/\\\//g, '/').trim();
+        redirectUrl = finalShortUrl;
+        taskHistory.note = `Đã sinh link LenTop thành công: ${redirectUrl}`;
+        await taskHistory.save();
+      } else {
+        const errMsg = resData?.message || resData?.error || JSON.stringify(resData);
+        taskHistory.status = 'rejected';
+        taskHistory.note = `LenTop từ chối tạo link: ${errMsg}`;
+        await taskHistory.save();
+        const err = new Error(`LenTop từ chối tạo link: ${errMsg}`);
+        err.status = 400;
+        throw err;
+      }
+    } catch (apiErr) {
+      const errDetail = apiErr.response?.data?.message || apiErr.message;
+      taskHistory.status = 'rejected';
+      taskHistory.note = `Lỗi kết nối API LenTop: ${errDetail}`;
+      await taskHistory.save();
+      const err = new Error(`Không thể kết nối đến máy chủ LenTop (${errDetail}). Vui lòng thử lại sau.`);
+      err.status = 502;
+      throw err;
+    }
+  } else if (isPhienChoSo) {
+    // ─── 2. XỬ LÝ PHIÊN CHỢ SỐ DEVELOPER API (JSON RESPONSE) ─────────────────
+    const adminToken = (task.apiToken || '').trim();
+    if (!adminToken) {
+      taskHistory.status = 'rejected';
+      taskHistory.note = 'Lỗi: Nhiệm vụ PhienChoSo chưa cài API Token trong Admin';
+      await taskHistory.save();
+      const err = new Error('Nhiệm vụ này (Phiên Chợ Số) chưa được Quản trị viên cài đặt API Token.');
+      err.status = 400;
+      throw err;
+    }
+
+    const apiEndpoint =
+      task.targetUrl && task.targetUrl.startsWith('http') && task.targetUrl.includes('phienchoso.com')
+        ? task.targetUrl.split('?')[0]
+        : 'https://api.phienchoso.com/tukhoa-dev.php';
+
+    const phienChoSoRequestUrl = `${apiEndpoint}?token=${encodeURIComponent(
+      adminToken
+    )}&url=${encodedPostbackUrl}&url_duphong=${encodedPostbackUrl}`;
+
+    try {
+      const phienChoSoRes = await axios.get(phienChoSoRequestUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MianuWorkShop/2.0',
+        },
+      });
+
+      const resData = phienChoSoRes.data;
+      if (resData && (resData.status === 'success' || resData.url)) {
+        redirectUrl = (resData.url || '').replace(/\\\//g, '/').trim();
+        taskHistory.note = `Đã sinh link PhienChoSo: ${redirectUrl}`;
+        await taskHistory.save();
+      } else {
+        const errMsg = resData?.message || resData?.error || JSON.stringify(resData);
+        taskHistory.status = 'rejected';
+        taskHistory.note = `PhienChoSo từ chối: ${errMsg}`;
+        await taskHistory.save();
+        const err = new Error(`Phiên Chợ Số từ chối tạo link: ${errMsg}`);
+        err.status = 400;
+        throw err;
+      }
+    } catch (apiErr) {
+      const errDetail = apiErr.response?.data?.message || apiErr.message;
+      taskHistory.status = 'rejected';
+      taskHistory.note = `Lỗi kết nối API PhienChoSo: ${errDetail}`;
+      await taskHistory.save();
+      const err = new Error(`Không thể kết nối đến máy chủ Phiên Chợ Số (${errDetail}).`);
+      err.status = 502;
+      throw err;
+    }
+  } else {
+    // ─── 3. XỬ LÝ MẠNG TIÊU CHUẨN (STANDARD) ────────────────────────────────
+    if (task.targetUrl) {
+      redirectUrl = task.targetUrl
+        .replace('{token}', sessionToken)
+        .replace('{userId}', userId.toString())
+        .replace('{sessionToken}', sessionToken);
+      if (!redirectUrl.includes(sessionToken)) {
+        const separator = redirectUrl.includes('?') ? '&' : '?';
+        redirectUrl = `${redirectUrl}${separator}token=${sessionToken}&userId=${userId}`;
+      }
+    } else {
+      redirectUrl = `https://trafficvn.top/shortlink?token=${sessionToken}&uid=${userId}`;
+    }
+  }
+
+  return { task, taskHistory, sessionToken, redirectUrl };
+}
+
+/**
+ * GET /api/tasks/generate
+ * Chuyển hướng trực tiếp (HTTP 302 Redirect) trình duyệt của khách hàng sang trang làm nhiệm vụ (LenTop, v.v.)
+ */
+const generateTaskLink = async (req, res, next) => {
+  try {
+    const taskId = req.query.taskId || req.params.id;
+    const userId = req.user._id;
+
+    if (!taskId) {
+      return res.status(400).send('Thiếu tham số taskId.');
+    }
+
+    const { redirectUrl } = await processTaskSession({ taskId, userId, req });
+
+    // Dùng HTTP 302 ép trình duyệt chuyển hướng thẳng sang link nhiệm vụ (LenTop, v.v.)
+    return res.redirect(302, redirectUrl);
+  } catch (err) {
+    const isHtml =
+      req.headers.accept?.includes('text/html') || !req.headers.accept?.includes('application/json');
+    if (isHtml) {
+      const frontendUrl = process.env.FRONTEND_URL || 'https://mianuwebhub.store';
+      return res.status(err.status || 400).send(
+        renderPostbackHtml({
+          type: 'error',
+          title: 'Không thể khởi tạo link',
+          message: err.message,
+          frontendUrl,
+        })
+      );
+    }
+    return res.status(err.status || 400).json({ success: false, message: err.message });
+  }
+};
+
+/**
  * POST /api/tasks/:id/start
- * Khởi tạo phiên làm nhiệm vụ (lưu clickTime cho Anti-Cheat bẫy thời gian)
- * HỖ TRỢ ĐẶC THÙ CHO PHIÊN CHỢ SỐ (phienchoso_json): GỌI DEVELOPER API ĐỂ LẤY URL
+ * Khởi tạo phiên làm nhiệm vụ (dạng JSON API)
  */
 const startTask = async (req, res, next) => {
   try {
-    const taskId = req.params.id;
+    const taskId = req.params.id || req.body.taskId || req.query.taskId;
     const userId = req.user._id;
-    const { start, end } = getTodayRange();
 
-    const task = await Task.findById(taskId);
-    if (!task || !task.isActive) {
-      return res.status(404).json({
-        success: false,
-        message: 'Nhiệm vụ không tồn tại hoặc đã tạm dừng.',
-      });
-    }
-
-    // Kiểm tra giới hạn ngày
-    const completedToday = await TaskHistory.countDocuments({
+    const { task, taskHistory, sessionToken, redirectUrl } = await processTaskSession({
+      taskId,
       userId,
-      taskId: task._id,
-      status: 'completed',
-      createdAt: { $gte: start, $lte: end },
+      req,
     });
-
-    if (completedToday >= task.dailyLimit) {
-      return res.status(400).json({
-        success: false,
-        message: `Bạn đã đạt giới hạn tối đa của nhiệm vụ ${task.name} trong ngày hôm nay (${task.dailyLimit} lần/ngày). Vui lòng quay lại vào ngày mai!`,
-      });
-    }
-
-    // Tạo mã phiên định danh duy nhất (sessionToken)
-    const sessionToken = crypto.randomBytes(16).toString('hex');
-    const clickTime = new Date();
-
-    const taskHistory = await TaskHistory.create({
-      userId,
-      taskId: task._id,
-      taskName: task.name,
-      sessionToken,
-      clickTime,
-      status: 'started',
-      ipAddress: req.headers['x-forwarded-for'] || req.socket.remoteAddress || '',
-      userAgent: req.headers['user-agent'] || '',
-      note: 'Khởi tạo phiên vượt link',
-    });
-
-    // Xác định URL của Backend Mianu để làm Postback
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:5000';
-    const serverBaseUrl = process.env.BACKEND_URL || `${protocol}://${host}`;
-    const mianuPostbackUrl = `${serverBaseUrl}/api/tasks/postback?token=${sessionToken}`;
-
-    let redirectUrl = '';
-
-    // ─── XỬ LÝ ĐẶC THÙ: PHIÊN CHỢ SỐ DEVELOPER API (phienchoso_json) ─────────
-    if (task.apiType === 'phienchoso_json') {
-      const adminToken = (task.apiToken || '').trim();
-      if (!adminToken) {
-        taskHistory.status = 'rejected';
-        taskHistory.note = 'Lỗi: Nhiệm vụ PhienChoSo chưa cài API Token trong Admin';
-        await taskHistory.save();
-        return res.status(400).json({
-          success: false,
-          message: 'Nhiệm vụ này (Phiên Chợ Số) chưa được Quản trị viên cài đặt API Token.',
-        });
-      }
-
-      // Endpoint mặc định của Phiên Chợ Số
-      const apiEndpoint =
-        task.targetUrl && task.targetUrl.startsWith('http') && task.targetUrl.includes('phienchoso.com')
-          ? task.targetUrl.split('?')[0]
-          : 'https://api.phienchoso.com/tukhoa-dev.php';
-
-      const encodedPostbackUrl = encodeURIComponent(mianuPostbackUrl);
-      const phienChoSoRequestUrl = `${apiEndpoint}?token=${encodeURIComponent(
-        adminToken
-      )}&url=${encodedPostbackUrl}&url_duphong=${encodedPostbackUrl}`;
-
-      try {
-        const phienChoSoRes = await axios.get(phienChoSoRequestUrl, {
-          timeout: 15000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MianuWorkShop/2.0',
-          },
-        });
-
-        const resData = phienChoSoRes.data;
-        if (resData && (resData.status === 'success' || resData.url)) {
-          redirectUrl = resData.url;
-          taskHistory.note = `Đã sinh link PhienChoSo: ${redirectUrl}`;
-          await taskHistory.save();
-        } else {
-          const errMsg = resData?.message || resData?.error || JSON.stringify(resData);
-          taskHistory.status = 'rejected';
-          taskHistory.note = `PhienChoSo từ chối: ${errMsg}`;
-          await taskHistory.save();
-          return res.status(400).json({
-            success: false,
-            message: `Phiên Chợ Số từ chối tạo link: ${errMsg}`,
-          });
-        }
-      } catch (apiErr) {
-        const errDetail = apiErr.response?.data?.message || apiErr.message;
-        taskHistory.status = 'rejected';
-        taskHistory.note = `Lỗi kết nối API PhienChoSo: ${errDetail}`;
-        await taskHistory.save();
-        return res.status(502).json({
-          success: false,
-          message: `Không thể kết nối đến máy chủ Phiên Chợ Số (${errDetail}). Vui lòng kiểm tra lại Token hoặc thử lại sau.`,
-        });
-      }
-    } else {
-      // ─── XỬ LÝ MẠNG TIÊU CHUẨN (STANDARD) ──────────────────────────────────
-      if (task.targetUrl) {
-        redirectUrl = task.targetUrl
-          .replace('{token}', sessionToken)
-          .replace('{userId}', userId.toString())
-          .replace('{sessionToken}', sessionToken);
-        if (!redirectUrl.includes(sessionToken)) {
-          const separator = redirectUrl.includes('?') ? '&' : '?';
-          redirectUrl = `${redirectUrl}${separator}token=${sessionToken}&userId=${userId}`;
-        }
-      } else {
-        redirectUrl = `https://trafficvn.top/shortlink?token=${sessionToken}&uid=${userId}`;
-      }
-    }
 
     return res.status(201).json({
       success: true,
@@ -411,7 +529,7 @@ const startTask = async (req, res, next) => {
       historyId: taskHistory._id,
     });
   } catch (err) {
-    next(err);
+    return res.status(err.status || 400).json({ success: false, message: err.message });
   }
 };
 
@@ -427,7 +545,7 @@ const handlePostback = async (req, res, next) => {
     const token = params.token || params.sessionToken || params.session_token || params.order_id;
     const bypassSimulate = params.bypassSimulate === true || params.bypassSimulate === 'true';
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://mianuwebhub.store';
 
     // Nhận diện nếu request đến từ chuyển hướng trình duyệt của User (như PhienChoSo redirect)
     const isBrowserNavigation =
@@ -789,7 +907,7 @@ const adminCreateTask = async (req, res, next) => {
       targetUrl: targetUrl ? targetUrl.trim() : '',
       guideText: guideText ? guideText.trim() : '',
       icon: icon || 'Link',
-      apiType: ['standard', 'phienchoso_json'].includes(apiType) ? apiType : 'standard',
+      apiType: ['standard', 'phienchoso_json', 'lentop_json'].includes(apiType) ? apiType : 'standard',
       apiToken: apiToken ? apiToken.trim() : '',
     });
 
@@ -835,7 +953,7 @@ const adminUpdateTask = async (req, res, next) => {
     if (guideText !== undefined) task.guideText = guideText.trim();
     if (icon !== undefined) task.icon = icon.trim();
     if (apiType !== undefined) {
-      task.apiType = ['standard', 'phienchoso_json'].includes(apiType) ? apiType : 'standard';
+      task.apiType = ['standard', 'phienchoso_json', 'lentop_json'].includes(apiType) ? apiType : 'standard';
     }
     if (apiToken !== undefined) task.apiToken = apiToken.trim();
 
@@ -923,6 +1041,19 @@ const seedDefaultTasks = async (req, res, next) => {
         apiType: 'phienchoso_json',
         apiToken: '',
       },
+      {
+        name: 'LenTop (Rút Gọn Link Developer API)',
+        slug: 'lentop-api',
+        description: 'Vượt link qua nền tảng LenTop bằng Developer API, tự động nhận shortenedUrl và chuyển hướng.',
+        rewardCoins: 50,
+        dailyLimit: 5,
+        minDurationSeconds: 30,
+        targetUrl: 'https://lentop.one/api',
+        guideText: 'Vượt link qua hệ thống LenTop -> Chờ đếm ngược -> Nhận thưởng Coin tự động.',
+        icon: 'Zap',
+        apiType: 'lentop_json',
+        apiToken: '',
+      },
     ];
 
     let createdCount = 0;
@@ -965,6 +1096,7 @@ const adminSimulatePostback = async (req, res, next) => {
 
 module.exports = {
   getPublicTasks,
+  generateTaskLink,
   startTask,
   handlePostback,
   getCoinHistory,

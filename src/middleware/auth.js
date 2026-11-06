@@ -15,6 +15,9 @@ const protect = async (req, res, next) => {
       req.headers.authorization.startsWith('Bearer ')
     ) {
       token = req.headers.authorization.split(' ')[1];
+    } else if (req.query && (req.query.token || req.query.auth_token)) {
+      // Hỗ trợ truyền JWT qua query string khi trình duyệt click mở trực tiếp link GET
+      token = req.query.token || req.query.auth_token;
     }
 
     if (!token) {

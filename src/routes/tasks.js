@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const {
   getPublicTasks,
+  generateTaskLink,
   startTask,
   handlePostback,
   getCoinHistory,
@@ -23,6 +24,8 @@ router.post('/postback', handlePostback);
 
 // ─── USER PROTECTED ROUTES ──────────────────────────────────────────────────
 router.get('/', protect, getPublicTasks);
+router.get('/generate', protect, generateTaskLink);
+router.get('/:id/generate', protect, generateTaskLink);
 router.post('/:id/start', protect, startTask);
 router.get('/history', protect, getCoinHistory);
 

@@ -22,9 +22,29 @@ const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
 
+const allowedOrigins = [
+  'https://mianuwebhub.store',
+  'https://www.mianuwebhub.store',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || '*',
+    origin: function (origin, callback) {
+      // Cho phép requests không có origin (như curl, mobile apps, server-to-server Webhooks)
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin === 'https://mianuwebhub.store' ||
+        origin.endsWith('.mianuwebhub.store') ||
+        process.env.NODE_ENV !== 'production'
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
