@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const User = require('./src/models/User');
+const { generateUniqueDepositCode } = require('./src/utils/generateDepositCode');
 
 const authRoutes = require('./src/routes/auth');
 const shopRoutes = require('./src/routes/shop');
@@ -75,7 +76,7 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/digital-shop';
 
-// Tự động cấp mã định danh nạp tiền dạng 6 số (000001, 000002...) cho các user cũ chưa có
+// Tự động cấp mã định danh nạp tiền độc nhất (6 ký tự) cho các user cũ chưa có
 async function ensureDepositCodes() {
   try {
     const usersWithoutCode = await User.find({
@@ -84,19 +85,8 @@ async function ensureDepositCodes() {
 
     if (usersWithoutCode.length === 0) return;
 
-    const lastUser = await User.findOne({ depositCode: { $exists: true, $ne: '' } })
-      .sort({ depositCode: -1 })
-      .select('depositCode');
-
-    let currentNumber = 0;
-    if (lastUser && lastUser.depositCode) {
-      const parsed = parseInt(lastUser.depositCode, 10);
-      if (!isNaN(parsed)) currentNumber = parsed;
-    }
-
     for (const u of usersWithoutCode) {
-      currentNumber += 1;
-      u.depositCode = String(currentNumber).padStart(6, '0');
+      u.depositCode = await generateUniqueDepositCode(6);
       await u.save();
       console.log(`[DepositCode] Đã cấp mã ${u.depositCode} cho tài khoản "${u.username}"`);
     }

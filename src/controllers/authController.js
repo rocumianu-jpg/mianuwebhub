@@ -3,6 +3,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { generateUniqueDepositCode } = require('../utils/generateDepositCode');
 
 /** Generate a signed JWT for a user document */
 const signToken = (user) =>
@@ -34,21 +35,22 @@ const register = async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Tự động sinh mã định danh nạp tiền dạng 6 chữ số tăng dần (000001, 000002, ...)
-    const lastUser = await User.findOne({ depositCode: { $exists: true, $ne: '' } })
-      .sort({ depositCode: -1 })
-      .select('depositCode');
-
-    let nextNumber = 1;
-    if (lastUser && lastUser.depositCode) {
-      const parsed = parseInt(lastUser.depositCode, 10);
-      if (!isNaN(parsed)) {
-        nextNumber = parsed + 1;
+    // Sinh ngẫu nhiên một chuỗi depositCode độc nhất (6 ký tự chữ và số)
+    let user;
+    let attempts = 0;
+    while (!user && attempts < 5) {
+      attempts++;
+      const depositCode = await generateUniqueDepositCode(6);
+      try {
+        user = await User.create({ username, passwordHash, depositCode });
+      } catch (createErr) {
+        // Nếu chẳng may xảy ra trùng lặp index depositCode do race-condition, thử lại với mã mới
+        if (createErr.code === 11000 && createErr.keyPattern?.depositCode && attempts < 5) {
+          continue;
+        }
+        throw createErr;
       }
     }
-    const depositCode = String(nextNumber).padStart(6, '0');
-
-    const user = await User.create({ username, passwordHash, depositCode });
 
     const token = signToken(user);
 
