@@ -327,7 +327,7 @@ async function processTaskSession({ taskId, userId, req }) {
 
   const isLentop =
     task.apiType === 'lentop_json' ||
-    (task.targetUrl && task.targetUrl.toLowerCase().includes('lentop.one'));
+    (task.targetUrl && task.targetUrl.toLowerCase().includes('lentop.one/api'));
 
   const isPhienChoSo =
     task.apiType === 'phienchoso_json' ||

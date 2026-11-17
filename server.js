@@ -19,6 +19,8 @@ const notificationRoutes = require('./src/routes/notifications');
 const feedbackRoutes = require('./src/routes/feedback');
 const taskRoutes = require('./src/routes/tasks');
 const giftCodeRoutes = require('./src/routes/giftcodes');
+const topupRoutes = require('./src/routes/topup');
+const { handleTSRCallback } = require('./src/controllers/topupController');
 const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -66,6 +68,11 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/feedbacks', feedbackRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/giftcodes', giftCodeRoutes);
+app.use('/api/topup', topupRoutes);
+
+// Webhook TheSieuRe (TSR) tiếp nhận kết quả gạch thẻ tự động
+app.post('/api/callback/tsr', handleTSRCallback);
+app.get('/api/callback/tsr', handleTSRCallback);
 
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is running' });
