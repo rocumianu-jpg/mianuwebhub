@@ -10,8 +10,14 @@ const {
   handleTSRCallback,
   getUserHistory,
   adminGetTopups,
+  getTopupConfig,
+  adminUpdateTopupConfig,
 } = require('../controllers/topupController');
 const { protect, adminOnly } = require('../middleware/auth');
+
+// ─── PUBLIC / USER CONFIG ROUTE ──────────────────────────────────────────────
+// GET /api/topup/config: Lấy chế độ nạp thẻ hiện tại (auto_tsr hoặc manual)
+router.get('/config', getTopupConfig);
 
 // ─── USER ROUTES (BẢO VỆ BẰNG JWT) ───────────────────────────────────────────
 // POST /api/topup: Khách gửi thẻ cào tự động qua TheSieuRe
@@ -30,6 +36,7 @@ router.get('/callback', handleTSRCallback);
 
 // ─── ADMIN ROUTES ────────────────────────────────────────────────────────────
 router.get('/admin/list', protect, adminOnly, adminGetTopups);
+router.put('/admin/config', protect, adminOnly, adminUpdateTopupConfig);
 router.post('/admin/:id/approve', protect, adminOnly, adminApproveManualCard);
 router.post('/admin/:id/reject', protect, adminOnly, adminRejectManualCard);
 

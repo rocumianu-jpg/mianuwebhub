@@ -5,6 +5,7 @@ const axios = require('axios');
 const CardTopup = require('../models/CardTopup');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
+const SystemSetting = require('../models/SystemSetting');
 
 /**
  * Danh sách mệnh giá hợp lệ cho từng nhà mạng
@@ -554,6 +555,9 @@ const submitManualCard = async (req, res, next) => {
 
     const requestId = `MANUAL_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
+    // Đồng bộ tính tỷ lệ chiết khấu & số tiền thực nhận chính xác
+    const { feePercent, receivedAmount } = calculateReceivedAmount(normTelco, numAmount);
+
     // Lưu vào Database với trạng thái pending_manual
     const topupRecord = await CardTopup.create({
       userId: user._id,
@@ -562,8 +566,8 @@ const submitManualCard = async (req, res, next) => {
       telco: normTelco,
       declaredAmount: numAmount,
       realAmount: numAmount,
-      feePercent: 0,
-      receivedAmount: numAmount, // Mặc định cộng đúng mệnh giá khi Admin duyệt
+      feePercent,
+      receivedAmount, // Thực nhận sau khi trừ phí chiết khấu
       serial: cleanSerial,
       code: cleanCode,
       status: 'pending_manual',
@@ -577,6 +581,8 @@ const submitManualCard = async (req, res, next) => {
         requestId: topupRecord.requestId,
         telco: topupRecord.telco,
         declaredAmount: topupRecord.declaredAmount,
+        feePercent: topupRecord.feePercent,
+        receivedAmount: topupRecord.receivedAmount,
         status: topupRecord.status,
       },
     });
@@ -587,7 +593,7 @@ const submitManualCard = async (req, res, next) => {
 
 /**
  * POST /api/topup/admin/:id/approve
- * Admin duyệt thẻ thủ công -> Tự động cộng đúng mệnh giá vào tài khoản User
+ * Admin duyệt thẻ thủ công -> Tự động cộng số tiền THỰC NHẬN (sau trừ phí) vào tài khoản User
  */
 const adminApproveManualCard = async (req, res, next) => {
   try {
@@ -608,26 +614,36 @@ const adminApproveManualCard = async (req, res, next) => {
       });
     }
 
-    // Lấy số tiền cần cộng (mặc định bằng đúng mệnh giá thẻ)
-    const creditAmount = Number(req.body.amount) || card.declaredAmount;
+    // Lấy số tiền thực nhận sau chiết khấu (KHÔNG BAO GIỜ cộng 100% declaredAmount)
+    // Nếu Admin tùy chỉnh số tiền trong req.body.amount (trường hợp khách chọn sai mệnh giá), dùng số tiền đó
+    let creditAmount;
+    if (req.body.amount !== undefined && req.body.amount !== null && !isNaN(Number(req.body.amount))) {
+      creditAmount = Number(req.body.amount);
+    } else {
+      creditAmount =
+        typeof card.receivedAmount === 'number' && card.receivedAmount > 0
+          ? card.receivedAmount
+          : calculateReceivedAmount(card.telco, card.realAmount || card.declaredAmount).receivedAmount;
+    }
 
     card.status = 'completed';
-    card.realAmount = creditAmount;
     card.receivedAmount = creditAmount;
-    card.feePercent = 0;
+    if (!card.feePercent && card.declaredAmount > 0) {
+      card.feePercent = getCardFeePercent(card.telco, card.declaredAmount);
+    }
     card.approvedBy = req.user._id;
     card.approvedAt = new Date();
     card.message = req.body.note || 'Quản trị viên đã duyệt thành công và cộng tiền vào tài khoản.';
     await card.save();
 
-    // Tự động cộng đúng mệnh giá cho User
+    // Tự động cộng đúng số tiền thực nhận cho User
     await User.findByIdAndUpdate(card.userId, { $inc: { balance: creditAmount } });
 
     // Tạo thông báo cho người dùng
     try {
       await Notification.create({
         title: 'Nạp Thẻ Thủ Công Thành Công',
-        message: `Thẻ ${card.telco} mệnh giá ${card.declaredAmount.toLocaleString('vi-VN')}đ đã được Admin phê duyệt! Bạn nhận được +${creditAmount.toLocaleString('vi-VN')}đ vào số dư.`,
+        message: `Thẻ ${card.telco} mệnh giá ${card.declaredAmount.toLocaleString('vi-VN')}đ đã được Admin phê duyệt! Bạn nhận được +${creditAmount.toLocaleString('vi-VN')}đ vào số dư (đã khấu trừ phí chiết khấu ${card.feePercent}%).`,
         type: 'personal',
         userId: card.userId,
       });
@@ -635,7 +651,7 @@ const adminApproveManualCard = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: `Đã duyệt thẻ thành công! Tài khoản người dùng đã được cộng +${creditAmount.toLocaleString('vi-VN')}đ.`,
+      message: `Đã duyệt thẻ thành công! Tài khoản người dùng đã được cộng +${creditAmount.toLocaleString('vi-VN')}đ (sau chiết khấu).`,
       card,
     });
   } catch (err) {
@@ -692,6 +708,55 @@ const adminRejectManualCard = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/topup/config
+ * Lấy chế độ nạp thẻ toàn hệ thống: 'auto_tsr' (Gạch tự động TSR) hoặc 'manual' (Duyệt thủ công)
+ */
+const getTopupConfig = async (req, res, next) => {
+  try {
+    let setting = await SystemSetting.findOne({ key: 'system_config' });
+    if (!setting) {
+      setting = await SystemSetting.create({ key: 'system_config', topupMode: 'manual' });
+    }
+    return res.status(200).json({
+      success: true,
+      mode: setting.topupMode || 'manual',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /api/topup/admin/config
+ * Admin cấu hình chế độ nạp thẻ cào toàn hệ thống
+ */
+const adminUpdateTopupConfig = async (req, res, next) => {
+  try {
+    const { mode } = req.body;
+    if (!['auto_tsr', 'manual'].includes(mode)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Chế độ không hợp lệ. Chỉ chấp nhận "auto_tsr" hoặc "manual".',
+      });
+    }
+
+    const setting = await SystemSetting.findOneAndUpdate(
+      { key: 'system_config' },
+      { topupMode: mode },
+      { new: true, upsert: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã cập nhật chế độ nạp thẻ sang: ${mode === 'manual' ? 'Thủ công (Admin duyệt)' : 'Tự động (TheSieuRe)'}`,
+      mode: setting.topupMode,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   submitCard,
   submitManualCard,
@@ -702,4 +767,6 @@ module.exports = {
   adminGetTopups,
   getCardFeePercent,
   calculateReceivedAmount,
+  getTopupConfig,
+  adminUpdateTopupConfig,
 };
