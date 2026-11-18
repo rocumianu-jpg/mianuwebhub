@@ -21,12 +21,27 @@ const announcementSchema = new mongoose.Schema(
     // 'all': Tất cả các trang
     // 'home': Chỉ trang chủ (/)
     // 'shop': Trang danh sách cửa hàng (/shop)
+    // 'category': Theo Mục Lục / Danh mục sản phẩm (targetPlatform, targetSubCategory)
     // 'product': Chỉ hiện ở một sản phẩm cụ thể
     // 'custom': Tùy biến theo đường dẫn URL (targetPath)
     displayTarget: {
       type: String,
-      enum: ['all', 'home', 'shop', 'product', 'custom'],
+      enum: ['all', 'home', 'shop', 'product', 'category', 'custom'],
       default: 'all',
+      index: true,
+    },
+    // Nền tảng / Mục chính nếu displayTarget === 'category' (vd: Discord, Roblox, CapCut)
+    targetPlatform: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+    // Mục con nếu displayTarget === 'category' (vd: Nitro, Decor, Boost Server)
+    targetSubCategory: {
+      type: String,
+      default: '',
+      trim: true,
       index: true,
     },
     // ID sản phẩm cụ thể nếu displayTarget === 'product'

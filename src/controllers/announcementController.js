@@ -8,6 +8,8 @@ const DEFAULT_ANNOUNCEMENT = {
   isActive: true,
   displayTarget: 'all',
   targetPath: '',
+  targetPlatform: '',
+  targetSubCategory: '',
   items: [
     { icon: '📌', text: 'Dịch vụ được xử lý tự động và thủ công tuỳ theo mặt hàng bạn chọn.' },
     { icon: '⚠️', text: 'Vui lòng đọc kỹ thông số kỹ thuật và chế độ bảo hành trước khi thanh toán.' },
@@ -17,17 +19,49 @@ const DEFAULT_ANNOUNCEMENT = {
 };
 
 /**
+ * Hàm chuẩn hóa đường dẫn URL:
+ * Cắt bỏ giao thức http/https, tên miền, decode URI và chuẩn hóa định dạng /path?params
+ */
+function normalizeUrlPath(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  let cleaned = rawUrl.trim();
+
+  try {
+    if (cleaned.startsWith('http://') || cleaned.startsWith('https://')) {
+      const u = new URL(cleaned);
+      cleaned = u.pathname + u.search;
+    } else if (cleaned.includes('/') && !cleaned.startsWith('/')) {
+      // ví dụ: mianuwebhub.store/shop?platform=...
+      const idx = cleaned.indexOf('/');
+      cleaned = cleaned.substring(idx);
+    }
+  } catch (e) {
+    cleaned = cleaned.replace(/^https?:\/\/[^/]+/i, '');
+  }
+
+  if (!cleaned.startsWith('/')) {
+    cleaned = '/' + cleaned;
+  }
+
+  try {
+    cleaned = decodeURIComponent(cleaned);
+  } catch (e) {}
+
+  return cleaned.trim();
+}
+
+/**
  * GET /api/announcement
  * Lấy Popup Lưu ý động theo URL hiện tại hoặc Product ID
- * Query params: ?path=/&productId=...
+ * Query params: ?path=/shop&fullPath=/shop?platform=Discord&subCategory=Nitro&platform=Discord&subCategory=Nitro&productId=...
  */
 const getAnnouncement = async (req, res, next) => {
   try {
-    const { path, productId } = req.query;
+    const { path, fullPath, platform, subCategory, productId } = req.query;
 
     let announcement = null;
 
-    // 1. Ưu tiên tìm popup theo sản phẩm cụ thể nếu có productId
+    // ─── ƯU TIÊN 1: Popup theo sản phẩm cụ thể nếu có productId ──────────────
     if (productId) {
       announcement = await Announcement.findOne({
         isActive: true,
@@ -36,31 +70,92 @@ const getAnnouncement = async (req, res, next) => {
       });
     }
 
-    // 2. Tìm popup theo URL chính xác (custom targetPath)
-    if (!announcement && path) {
+    // ─── ƯU TIÊN 2: Khớp Popup theo Mục Lục / Danh Mục Sản Phẩm ───────────────
+    // A. Khớp cả Nền tảng + Mục con (ví dụ: Discord > Nitro)
+    if (!announcement && platform && subCategory) {
+      const cleanPlatform = platform.trim();
+      const cleanSub = subCategory.trim();
       announcement = await Announcement.findOne({
         isActive: true,
-        displayTarget: 'custom',
-        targetPath: path.trim(),
+        displayTarget: 'category',
+        targetPlatform: { $regex: new RegExp(`^${cleanPlatform.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        targetSubCategory: { $regex: new RegExp(`^${cleanSub.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
       });
     }
 
-    // 3. Tìm popup theo nhóm trang: Trang chủ (/) hoặc Cửa hàng (/shop)
-    if (!announcement && path) {
-      if (path === '/' || path === '') {
-        announcement = await Announcement.findOne({
-          isActive: true,
-          displayTarget: 'home',
-        });
-      } else if (path.startsWith('/shop')) {
-        announcement = await Announcement.findOne({
-          isActive: true,
-          displayTarget: 'shop',
-        });
+    // B. Khớp Nền tảng chung nếu mục con không có popup riêng (ví dụ: Discord chung)
+    if (!announcement && platform) {
+      const cleanPlatform = platform.trim();
+      announcement = await Announcement.findOne({
+        isActive: true,
+        displayTarget: 'category',
+        targetPlatform: { $regex: new RegExp(`^${cleanPlatform.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        $or: [{ targetSubCategory: '' }, { targetSubCategory: null }],
+      });
+    }
+
+    // ─── ƯU TIÊN 3: Khớp theo Custom URL Path (chuẩn hóa domain, decode, so khớp param) ─
+    if (!announcement && (fullPath || path)) {
+      const customAnnouncements = await Announcement.find({
+        isActive: true,
+        displayTarget: 'custom',
+      });
+
+      const reqFullNorm = normalizeUrlPath(fullPath || path).toLowerCase();
+      const reqPathNorm = normalizeUrlPath(path || fullPath).toLowerCase();
+
+      for (const c of customAnnouncements) {
+        const targetNorm = normalizeUrlPath(c.targetPath).toLowerCase();
+        if (!targetNorm) continue;
+
+        // So khớp trực tiếp chuỗi URL chuẩn hóa
+        if (targetNorm === reqFullNorm || targetNorm === reqPathNorm) {
+          announcement = c;
+          break;
+        }
+
+        // So khớp thông minh theo Path + từng Query Parameter
+        if (targetNorm.includes('?')) {
+          const [tBase, tQuery] = targetNorm.split('?');
+          const [rBase, rQuery] = reqFullNorm.split('?');
+
+          if (tBase === rBase && rQuery) {
+            const tParams = new URLSearchParams(tQuery);
+            const rParams = new URLSearchParams(rQuery);
+
+            let allMatch = true;
+            for (const [key, val] of tParams.entries()) {
+              if (rParams.get(key)?.toLowerCase() !== val?.toLowerCase()) {
+                allMatch = false;
+                break;
+              }
+            }
+            if (allMatch) {
+              announcement = c;
+              break;
+            }
+          }
+        }
       }
     }
 
-    // 4. Nếu chưa thấy popup riêng, tìm popup chung áp dụng cho tất cả ('all')
+    // ─── ƯU TIÊN 4: Popup trang Cửa Hàng (/shop) - chỉ hiện khi không có popup mục cụ thể ─
+    if (!announcement && path && path.startsWith('/shop')) {
+      announcement = await Announcement.findOne({
+        isActive: true,
+        displayTarget: 'shop',
+      });
+    }
+
+    // ─── ƯU TIÊN 5: Popup Trang Chủ (/) ──────────────────────────────────────
+    if (!announcement && (path === '/' || path === '')) {
+      announcement = await Announcement.findOne({
+        isActive: true,
+        displayTarget: 'home',
+      });
+    }
+
+    // ─── ƯU TIÊN 6: Popup chung toàn trang ('all') ────────────────────────────
     if (!announcement) {
       announcement = await Announcement.findOne({
         isActive: true,
@@ -68,7 +163,7 @@ const getAnnouncement = async (req, res, next) => {
       }).sort({ updatedAt: -1 });
     }
 
-    // 5. Khởi tạo dữ liệu mặc định nếu database trống hoàn toàn
+    // ─── 7. Khởi tạo dữ liệu mặc định nếu DB rỗng ────────────────────────────
     if (!announcement) {
       const count = await Announcement.countDocuments();
       if (count === 0) {
@@ -110,19 +205,39 @@ const adminGetAnnouncements = async (_req, res, next) => {
  */
 const adminCreateAnnouncement = async (req, res, next) => {
   try {
-    const { title, isActive, displayTarget, targetProductId, targetPath, items } = req.body;
+    const {
+      title,
+      isActive,
+      displayTarget,
+      targetPlatform,
+      targetSubCategory,
+      targetProductId,
+      targetPath,
+      items,
+    } = req.body;
+
+    let cleanedPath = targetPath ? normalizeUrlPath(targetPath) : '';
+    if (displayTarget === 'category' && targetPlatform) {
+      cleanedPath = `/shop?platform=${encodeURIComponent(targetPlatform)}${
+        targetSubCategory ? `&subCategory=${encodeURIComponent(targetSubCategory)}` : ''
+      }`;
+    }
 
     const newPopup = await Announcement.create({
       title: title ? title.trim() : '⚠️ Lưu ý khi đặt đơn',
       isActive: isActive !== undefined ? Boolean(isActive) : true,
       displayTarget: displayTarget || 'all',
+      targetPlatform: targetPlatform ? targetPlatform.trim() : '',
+      targetSubCategory: targetSubCategory ? targetSubCategory.trim() : '',
       targetProductId: targetProductId || null,
-      targetPath: targetPath ? targetPath.trim() : '',
+      targetPath: cleanedPath,
       items: Array.isArray(items)
-        ? items.map((it) => ({
-            icon: it.icon ? it.icon.trim() : '📌',
-            text: it.text ? it.text.trim() : '',
-          })).filter((it) => it.text)
+        ? items
+            .map((it) => ({
+              icon: it.icon ? it.icon.trim() : '📌',
+              text: it.text ? it.text.trim() : '',
+            }))
+            .filter((it) => it.text)
         : [],
     });
 
@@ -143,7 +258,16 @@ const adminCreateAnnouncement = async (req, res, next) => {
 const adminUpdateAnnouncement = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { title, isActive, displayTarget, targetProductId, targetPath, items } = req.body;
+    const {
+      title,
+      isActive,
+      displayTarget,
+      targetPlatform,
+      targetSubCategory,
+      targetProductId,
+      targetPath,
+      items,
+    } = req.body;
 
     const popup = await Announcement.findById(id);
     if (!popup) {
@@ -153,13 +277,26 @@ const adminUpdateAnnouncement = async (req, res, next) => {
     if (title !== undefined) popup.title = title.trim();
     if (isActive !== undefined) popup.isActive = Boolean(isActive);
     if (displayTarget !== undefined) popup.displayTarget = displayTarget;
+    if (targetPlatform !== undefined) popup.targetPlatform = targetPlatform.trim();
+    if (targetSubCategory !== undefined) popup.targetSubCategory = targetSubCategory.trim();
     if (targetProductId !== undefined) popup.targetProductId = targetProductId || null;
-    if (targetPath !== undefined) popup.targetPath = targetPath.trim();
+
+    if (targetPath !== undefined) {
+      popup.targetPath = targetPath ? normalizeUrlPath(targetPath) : '';
+    }
+    if (popup.displayTarget === 'category' && popup.targetPlatform) {
+      popup.targetPath = `/shop?platform=${encodeURIComponent(popup.targetPlatform)}${
+        popup.targetSubCategory ? `&subCategory=${encodeURIComponent(popup.targetSubCategory)}` : ''
+      }`;
+    }
+
     if (items !== undefined && Array.isArray(items)) {
-      popup.items = items.map((it) => ({
-        icon: it.icon ? it.icon.trim() : '📌',
-        text: it.text ? it.text.trim() : '',
-      })).filter((it) => it.text);
+      popup.items = items
+        .map((it) => ({
+          icon: it.icon ? it.icon.trim() : '📌',
+          text: it.text ? it.text.trim() : '',
+        }))
+        .filter((it) => it.text);
     }
 
     await popup.save();
