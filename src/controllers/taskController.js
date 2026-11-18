@@ -327,11 +327,13 @@ async function processTaskSession({ taskId, userId, req }) {
 
   const isLentop =
     task.apiType === 'lentop_json' ||
-    (task.targetUrl && task.targetUrl.toLowerCase().includes('lentop.one/api'));
+    (task.targetUrl && task.targetUrl.toLowerCase().includes('lentop.one')) ||
+    (task.name && task.name.toLowerCase().includes('lentop'));
 
   const isPhienChoSo =
     task.apiType === 'phienchoso_json' ||
-    (task.targetUrl && task.targetUrl.toLowerCase().includes('phienchoso.com'));
+    (task.targetUrl && task.targetUrl.toLowerCase().includes('phienchoso.com')) ||
+    (task.name && task.name.toLowerCase().includes('phiên chợ số'));
 
   if (isLentop) {
     // ─── 1. XỬ LÝ LENTOP DEVELOPER API (JSON RESPONSE) ───────────────────────
@@ -350,13 +352,13 @@ async function processTaskSession({ taskId, userId, req }) {
       throw err;
     }
 
-    let lentopEndpoint = 'https://lentop.one/api';
-    if (task.targetUrl && task.targetUrl.startsWith('http') && task.targetUrl.includes('lentop.one')) {
-      lentopEndpoint = task.targetUrl.split('?')[0];
-    }
+    const lentopEndpoint = 'https://lentop.one/api';
 
-    // Cập nhật đường link Postback chính thức để LenTop chuyển hướng khách về sau khi hoàn thành
-    const lentopPostbackUrl = `https://mianuwebhub.store/api/tasks/postback?token=${sessionToken}`;
+    // Xác định đường link Postback chính xác (ưu tiên BACKEND_URL hoặc tên miền chính thức)
+    const backendDomain =
+      process.env.BACKEND_URL ||
+      (host && host.includes('onrender.com') ? `https://${host}` : 'https://mianuwebhub.store');
+    const lentopPostbackUrl = `${backendDomain}/api/tasks/postback?token=${sessionToken}`;
     const encodedLentopPostback = encodeURIComponent(lentopPostbackUrl);
 
     const lentopRequestUrl = `${lentopEndpoint}?api=${encodeURIComponent(

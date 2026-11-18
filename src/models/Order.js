@@ -61,6 +61,26 @@ const orderSchema = new mongoose.Schema(
       default: 0,
       min: [0, 'coinsPaid cannot be negative'],
     },
+    // Thông tin biến thể (Gói dịch vụ đã chọn - Decao)
+    variantId: {
+      type: String,
+      default: null,
+    },
+    variantName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    // Trạng thái và phản hồi từ API thứ 3 (Auto API Webhook)
+    apiWebhookStatus: {
+      type: String,
+      enum: ['pending', 'success', 'failed', 'none'],
+      default: 'none',
+    },
+    apiWebhookResponse: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   { timestamps: true }
 );

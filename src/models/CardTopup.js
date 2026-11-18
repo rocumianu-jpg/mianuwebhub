@@ -62,16 +62,34 @@ const cardTopupSchema = new mongoose.Schema(
       required: [true, 'Mã thẻ (PIN) là bắt buộc'],
       trim: true,
     },
+    // Phương thức nạp: auto_tsr (TheSieuRe tự động) hoặc manual (Nạp thủ công chờ Admin duyệt)
+    method: {
+      type: String,
+      enum: ['auto_tsr', 'manual'],
+      default: 'auto_tsr',
+      index: true,
+    },
     // Trạng thái giao dịch:
-    // pending: Đang chờ TSR duyệt
-    // completed: Nạp thẻ thành công, đúng mệnh giá, đã cộng tiền
+    // pending: Đang chờ TSR duyệt tự động
+    // pending_manual: Đang chờ Quản trị viên duyệt thủ công
+    // completed: Nạp thẻ thành công, đã cộng tiền
     // wrong_amount: Nạp thẻ sai mệnh giá khai báo
-    // failed: Thẻ lỗi, sai mã/seri hoặc đã sử dụng
+    // failed: Thẻ lỗi, sai mã/seri hoặc bị Admin từ chối
     status: {
       type: String,
-      enum: ['pending', 'completed', 'wrong_amount', 'failed'],
+      enum: ['pending', 'pending_manual', 'completed', 'wrong_amount', 'failed'],
       default: 'pending',
       index: true,
+    },
+    // Thông tin Admin duyệt (nếu là nạp thủ công)
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    approvedAt: {
+      type: Date,
+      default: null,
     },
     // Mã giao dịch phía TheSieuRe (trans_id)
     tsrTransId: {

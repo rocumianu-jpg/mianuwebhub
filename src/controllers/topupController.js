@@ -501,8 +501,202 @@ const adminGetTopups = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/topup/manual
+ * Gửi thẻ cào nạp thủ công (chờ Admin duyệt, không gọi qua TSR API)
+ */
+const submitManualCard = async (req, res, next) => {
+  try {
+    const { telco, amount, serial, code } = req.body;
+    const userId = req.user?._id || req.body.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Vui lòng đăng nhập để nạp thẻ.',
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tài khoản người dùng không tồn tại.',
+      });
+    }
+
+    const normTelco = (telco || '').toUpperCase().trim();
+    if (!['VIETTEL', 'VINAPHONE', 'GARENA', 'ZING'].includes(normTelco)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nhà mạng không hợp lệ. Chỉ hỗ trợ Viettel, Vinaphone, Garena, Zing.',
+      });
+    }
+
+    const numAmount = Number(amount);
+    const validList = VALID_AMOUNTS[normTelco] || [];
+    if (!numAmount || !validList.includes(numAmount)) {
+      return res.status(400).json({
+        success: false,
+        message: `Mệnh giá ${numAmount ? numAmount.toLocaleString('vi-VN') + 'đ' : ''} không hợp lệ. Vui lòng chọn mệnh giá chính xác từ danh sách.`,
+      });
+    }
+
+    const cleanSerial = (serial || '').toString().trim();
+    const cleanCode = (code || '').toString().trim();
+
+    if (!cleanSerial || !cleanCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vui lòng nhập đầy đủ Số Serial và Mã thẻ (PIN).',
+      });
+    }
+
+    const requestId = `MANUAL_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
+    // Lưu vào Database với trạng thái pending_manual
+    const topupRecord = await CardTopup.create({
+      userId: user._id,
+      requestId,
+      method: 'manual',
+      telco: normTelco,
+      declaredAmount: numAmount,
+      realAmount: numAmount,
+      feePercent: 0,
+      receivedAmount: numAmount, // Mặc định cộng đúng mệnh giá khi Admin duyệt
+      serial: cleanSerial,
+      code: cleanCode,
+      status: 'pending_manual',
+      message: 'Đang chờ Quản trị viên kiểm tra và duyệt thẻ thủ công',
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Gửi thẻ thủ công thành công! Thẻ của bạn đang chờ Admin kiểm tra và duyệt tiền.',
+      data: {
+        requestId: topupRecord.requestId,
+        telco: topupRecord.telco,
+        declaredAmount: topupRecord.declaredAmount,
+        status: topupRecord.status,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/topup/admin/:id/approve
+ * Admin duyệt thẻ thủ công -> Tự động cộng đúng mệnh giá vào tài khoản User
+ */
+const adminApproveManualCard = async (req, res, next) => {
+  try {
+    const cardId = req.params.id;
+    const card = await CardTopup.findById(cardId);
+
+    if (!card) {
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy giao dịch thẻ này.',
+      });
+    }
+
+    if (card.status !== 'pending_manual' && card.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Thẻ này đã được xử lý trước đó với trạng thái: ${card.status}`,
+      });
+    }
+
+    // Lấy số tiền cần cộng (mặc định bằng đúng mệnh giá thẻ)
+    const creditAmount = Number(req.body.amount) || card.declaredAmount;
+
+    card.status = 'completed';
+    card.realAmount = creditAmount;
+    card.receivedAmount = creditAmount;
+    card.feePercent = 0;
+    card.approvedBy = req.user._id;
+    card.approvedAt = new Date();
+    card.message = req.body.note || 'Quản trị viên đã duyệt thành công và cộng tiền vào tài khoản.';
+    await card.save();
+
+    // Tự động cộng đúng mệnh giá cho User
+    await User.findByIdAndUpdate(card.userId, { $inc: { balance: creditAmount } });
+
+    // Tạo thông báo cho người dùng
+    try {
+      await Notification.create({
+        title: 'Nạp Thẻ Thủ Công Thành Công',
+        message: `Thẻ ${card.telco} mệnh giá ${card.declaredAmount.toLocaleString('vi-VN')}đ đã được Admin phê duyệt! Bạn nhận được +${creditAmount.toLocaleString('vi-VN')}đ vào số dư.`,
+        type: 'personal',
+        userId: card.userId,
+      });
+    } catch (notifErr) {}
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã duyệt thẻ thành công! Tài khoản người dùng đã được cộng +${creditAmount.toLocaleString('vi-VN')}đ.`,
+      card,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/topup/admin/:id/reject
+ * Admin từ chối / hủy thẻ sai -> Không cộng tiền
+ */
+const adminRejectManualCard = async (req, res, next) => {
+  try {
+    const cardId = req.params.id;
+    const { reason } = req.body;
+    const card = await CardTopup.findById(cardId);
+
+    if (!card) {
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy giao dịch thẻ này.',
+      });
+    }
+
+    if (card.status !== 'pending_manual' && card.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Thẻ này đã được xử lý trước đó với trạng thái: ${card.status}`,
+      });
+    }
+
+    card.status = 'failed';
+    card.approvedBy = req.user._id;
+    card.approvedAt = new Date();
+    card.message = reason || 'Thẻ sai hoặc không hợp lệ do Admin từ chối';
+    await card.save();
+
+    try {
+      await Notification.create({
+        title: 'Thẻ Cào Bị Từ Chối',
+        message: `Thẻ ${card.telco} (Serial: ${card.serial}) bị từ chối duyệt: ${card.message}. Vui lòng liên hệ Admin nếu có nhầm lẫn.`,
+        type: 'personal',
+        userId: card.userId,
+      });
+    } catch (notifErr) {}
+
+    return res.status(200).json({
+      success: true,
+      message: 'Đã từ chối thẻ thành công. Không cộng tiền cho người dùng.',
+      card,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   submitCard,
+  submitManualCard,
+  adminApproveManualCard,
+  adminRejectManualCard,
   handleTSRCallback,
   getUserHistory,
   adminGetTopups,

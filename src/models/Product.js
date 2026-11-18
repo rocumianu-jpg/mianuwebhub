@@ -2,6 +2,51 @@
 
 const mongoose = require('mongoose');
 
+/**
+ * Sub-schema cho từng biến thể (Gói dịch vụ - Decao)
+ */
+const variantSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, 'Tên gói dịch vụ là bắt buộc'],
+      trim: true,
+    },
+    price: {
+      type: Number,
+      required: [true, 'Giá gói dịch vụ là bắt buộc'],
+      min: [0, 'Giá không thể âm'],
+    },
+    originalPrice: {
+      type: Number,
+      default: 0,
+      min: [0, 'Giá gốc không thể âm'],
+    },
+    stock: {
+      type: Number,
+      default: 0,
+      min: [0, 'Số lượng kho không thể âm'],
+    },
+    isCoinAllowed: {
+      type: Boolean,
+      default: false,
+    },
+    coinPrice: {
+      type: Number,
+      default: 0,
+      min: [0, 'Giá Coin không thể âm'],
+    },
+    // Kho link / key dành riêng cho biến thể này
+    secretLinks: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+  },
+  { timestamps: false }
+);
+
 const productSchema = new mongoose.Schema(
   {
     title: {
@@ -13,6 +58,7 @@ const productSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    // Giá mặc định (đối với sản phẩm đơn lẻ hoặc giá khởi điểm hiển thị)
     price: {
       type: Number,
       required: [true, 'Product price is required'],
@@ -31,10 +77,10 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    // Phân loại: instant (Tự động / Có sẵn - nhả link ngay) | manual (Xử lý thủ công) | bot_gemini (Tự động Telegram Bot)
+    // Phân loại: instant (Tự động / Có sẵn - nhả link ngay) | manual (Xử lý thủ công) | auto_api (Bắn Webhook bên thứ 3)
     productType: {
       type: String,
-      enum: ['instant', 'manual', 'bot_gemini'],
+      enum: ['instant', 'manual', 'bot_gemini', 'auto_api'],
       default: 'instant',
     },
     // Mô tả chi tiết (Bài viết chi tiết, chế độ bảo hành, hướng dẫn sử dụng)
@@ -42,7 +88,7 @@ const productSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
-    // Yêu cầu thông tin từ người mua trước khi thanh toán (vd: Link profile, Email...)
+    // Yêu cầu thông tin từ người mua trước khi thanh toán (vd: Link profile, Email, Tên nhân vật Roblox...)
     customRequirementLabel: {
       type: String,
       default: '',
@@ -66,7 +112,7 @@ const productSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
-    // Mảng chứa các link/key trong kho bí mật gắn trực tiếp vào sản phẩm
+    // Mảng chứa các link/key trong kho bí mật gắn trực tiếp vào sản phẩm đơn lẻ
     secretLinks: [
       {
         type: String,
@@ -92,6 +138,48 @@ const productSchema = new mongoose.Schema(
     isBestSeller: {
       type: Boolean,
       default: false,
+    },
+
+    // ─── TÍNH NĂNG MỚI V2.5: SẢN PHẨM ĐA GÓI / BIẾN THỂ (VARIANTS) ───────────
+    hasVariants: {
+      type: Boolean,
+      default: false,
+    },
+    variants: [variantSchema],
+
+    // ─── TÍNH NĂNG MỚI V2.5: TÍCH HỢP API THỨ 3 (AUTO API WEBHOOK) ───────────
+    // Dùng cho Auto-Robux, Auto-Redeem, Server game tự động...
+    apiIntegration: {
+      isEnabled: {
+        type: Boolean,
+        default: false,
+      },
+      endpointUrl: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      method: {
+        type: String,
+        enum: ['GET', 'POST'],
+        default: 'POST',
+      },
+      apiKey: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      // Headers tùy chỉnh (vd: Bearer token)
+      customHeaders: {
+        type: Map,
+        of: String,
+        default: () => new Map(),
+      },
+      // Ghi chú hoặc template payload
+      payloadTemplate: {
+        type: String,
+        default: '',
+      },
     },
   },
   { timestamps: true }

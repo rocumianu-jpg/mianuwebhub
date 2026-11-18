@@ -37,6 +37,9 @@ const createProduct = async (req, res, next) => {
       coinPrice,
       isCoinOnly,
       isBestSeller,
+      hasVariants,
+      variants,
+      apiIntegration,
     } = req.body;
 
     if (!title || price === undefined) {
@@ -53,7 +56,7 @@ const createProduct = async (req, res, next) => {
       }
     }
 
-    const normalizedProductType = ['manual', 'bot_gemini'].includes(productType)
+    const normalizedProductType = ['manual', 'bot_gemini', 'auto_api'].includes(productType)
       ? productType
       : 'instant';
 
@@ -75,6 +78,9 @@ const createProduct = async (req, res, next) => {
       coinPrice: Number(coinPrice) || 0,
       isCoinOnly: Boolean(isCoinOnly),
       isBestSeller: Boolean(isBestSeller),
+      hasVariants: Boolean(hasVariants),
+      variants: Array.isArray(variants) ? variants : [],
+      apiIntegration: apiIntegration || { isEnabled: false },
     });
 
     if (secretItem && secretItem.trim()) {
@@ -122,6 +128,9 @@ const updateProduct = async (req, res, next) => {
       coinPrice,
       isCoinOnly,
       isBestSeller,
+      hasVariants,
+      variants,
+      apiIntegration,
     } = req.body;
 
     const product = await Product.findById(id);
@@ -164,7 +173,7 @@ const updateProduct = async (req, res, next) => {
     if (customRequirementLabel !== undefined) product.customRequirementLabel = customRequirementLabel.trim();
     if (isActive !== undefined) product.isActive = Boolean(isActive);
     if (productType !== undefined) {
-      product.productType = ['manual', 'bot_gemini'].includes(productType) ? productType : 'instant';
+      product.productType = ['manual', 'bot_gemini', 'auto_api'].includes(productType) ? productType : 'instant';
     }
     if (platform !== undefined) product.platform = platform.trim();
     if (subCategory !== undefined) product.subCategory = subCategory.trim();
@@ -177,6 +186,13 @@ const updateProduct = async (req, res, next) => {
       }
     }
     if (isBestSeller !== undefined) product.isBestSeller = Boolean(isBestSeller);
+    if (hasVariants !== undefined) product.hasVariants = Boolean(hasVariants);
+    if (variants !== undefined && Array.isArray(variants)) {
+      product.variants = variants;
+    }
+    if (apiIntegration !== undefined && typeof apiIntegration === 'object') {
+      product.apiIntegration = apiIntegration;
+    }
 
     if (secretItem !== undefined) {
       const trimmedSecret = secretItem.trim();

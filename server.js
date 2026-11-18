@@ -13,13 +13,16 @@ const ordersRoutes = require('./src/routes/orders');
 const depositRoutes = require('./src/routes/deposit');
 const adminRoutes = require('./src/routes/admin');
 const categoryRoutes = require('./src/routes/category');
-const geminiRoutes = require('./src/routes/gemini');
 const announcementRoutes = require('./src/routes/announcement');
 const notificationRoutes = require('./src/routes/notifications');
 const feedbackRoutes = require('./src/routes/feedback');
 const taskRoutes = require('./src/routes/tasks');
 const giftCodeRoutes = require('./src/routes/giftcodes');
 const topupRoutes = require('./src/routes/topup');
+const ticketRoutes = require('./src/routes/tickets');
+const newsRoutes = require('./src/routes/news');
+const navigationRoutes = require('./src/routes/navigation');
+const themeRoutes = require('./src/routes/theme');
 const { handleTSRCallback } = require('./src/controllers/topupController');
 const errorHandler = require('./src/middleware/errorHandler');
 
@@ -62,13 +65,16 @@ app.use('/api/orders', ordersRoutes);
 app.use('/api/deposit', depositRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoryRoutes);
-app.use('/api/gemini', geminiRoutes);
 app.use('/api/announcement', announcementRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/feedbacks', feedbackRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/giftcodes', giftCodeRoutes);
 app.use('/api/topup', topupRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/news', newsRoutes);
+app.use('/api/navigation', navigationRoutes);
+app.use('/api/theme', themeRoutes);
 
 // Webhook TheSieuRe (TSR) tiếp nhận kết quả gạch thẻ tự động
 app.post('/api/callback/tsr', handleTSRCallback);

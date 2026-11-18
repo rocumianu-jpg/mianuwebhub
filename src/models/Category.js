@@ -9,6 +9,13 @@ const categorySchema = new mongoose.Schema(
       required: [true, 'Tên danh mục là bắt buộc'],
       trim: true,
     },
+    // Tên nhóm danh mục (Category Group) ví dụ: 'Dịch Vụ Mạng Xã Hội', 'Sản Phẩm Đặc Biệt', 'Dịch Vụ API', 'Tài Khoản & Bản Quyền'
+    group: {
+      type: String,
+      default: 'Dịch Vụ Mạng Xã Hội',
+      trim: true,
+      index: true,
+    },
     // Chuỗi tên icon (ví dụ: Video, Share2, Camera, Youtube, Send, ShoppingBag, Disc, ShieldCheck, Terminal, Tag...)
     icon: {
       type: String,

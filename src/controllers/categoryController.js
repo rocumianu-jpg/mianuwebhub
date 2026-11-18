@@ -4,7 +4,7 @@ const Category = require('../models/Category');
 
 /**
  * GET /api/categories
- * Lấy danh sách danh mục (cung cấp cả dạng phẳng và dạng cây cha-con)
+ * Lấy danh sách danh mục (cung cấp cả dạng phẳng, dạng cây cha-con, và dạng nhóm đa tầng)
  */
 const getCategories = async (req, res, next) => {
   try {
@@ -22,10 +22,27 @@ const getCategories = async (req, res, next) => {
       };
     });
 
+    // Module 4: Xây dựng cấu trúc phân nhóm (grouped: Record<string, CategoryTree[]>)
+    const grouped = {};
+    const groupsSet = new Set();
+
+    tree.forEach((parentItem) => {
+      const grp = parentItem.group && parentItem.group.trim() ? parentItem.group.trim() : 'Dịch Vụ Mạng Xã Hội';
+      groupsSet.add(grp);
+      if (!grouped[grp]) {
+        grouped[grp] = [];
+      }
+      grouped[grp].push(parentItem);
+    });
+
+    const groups = Array.from(groupsSet);
+
     return res.json({
       success: true,
       categories,
       tree,
+      grouped,
+      groups,
     });
   } catch (err) {
     next(err);
@@ -38,7 +55,7 @@ const getCategories = async (req, res, next) => {
  */
 const createCategory = async (req, res, next) => {
   try {
-    const { name, icon, parent, order } = req.body;
+    const { name, icon, parent, order, group } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -49,8 +66,20 @@ const createCategory = async (req, res, next) => {
 
     const parentId = parent && parent !== 'null' && parent !== '' ? parent : null;
 
+    let resolvedGroup = group && group.trim() ? group.trim() : '';
+    if (parentId && !resolvedGroup) {
+      const parentCat = await Category.findById(parentId);
+      if (parentCat && parentCat.group) {
+        resolvedGroup = parentCat.group;
+      }
+    }
+    if (!resolvedGroup) {
+      resolvedGroup = 'Dịch Vụ Mạng Xã Hội';
+    }
+
     const category = await Category.create({
       name: name.trim(),
+      group: resolvedGroup,
       icon: icon ? icon.trim() : 'ListTree',
       parent: parentId,
       order: Number(order) || 0,
@@ -74,7 +103,7 @@ const createCategory = async (req, res, next) => {
 const updateCategory = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, icon, parent, order, isActive } = req.body;
+    const { name, icon, parent, order, isActive, group } = req.body;
 
     const category = await Category.findById(id);
     if (!category) {
@@ -91,6 +120,16 @@ const updateCategory = async (req, res, next) => {
     }
     if (order !== undefined) category.order = Number(order) || 0;
     if (isActive !== undefined) category.isActive = Boolean(isActive);
+    if (group !== undefined) {
+      category.group = group.trim() || 'Dịch Vụ Mạng Xã Hội';
+      // Nếu là danh mục cha thì đồng bộ group cho các mục con
+      if (!category.parent) {
+        await Category.updateMany(
+          { parent: category._id },
+          { group: category.group }
+        );
+      }
+    }
 
     await category.save();
 
