@@ -100,6 +100,23 @@ const getProducts = async (req, res, next) => {
   }
 };
 
+// GET /api/shop/products/:id
+const getProductById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ success: false, message: 'ID sản phẩm không hợp lệ.' });
+    }
+    const product = await Product.findOne({ _id: id, isActive: true });
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy sản phẩm.' });
+    }
+    return res.json({ success: true, product });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // POST /api/shop/buy
 const buyProduct = async (req, res, next) => {
   const productId = req.body?.productId || req.params?.productId;
@@ -521,5 +538,6 @@ const buyProduct = async (req, res, next) => {
 
 module.exports = {
   getProducts,
+  getProductById,
   buyProduct,
 };
